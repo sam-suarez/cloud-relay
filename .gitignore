@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+*.tsbuildinfo
+.react-router/
+
+# CDK: synthesized templates and local context lookups (context can contain account IDs)
+cdk.out/
+infra/cdk.context.json
+
+# Environment and credentials: never commit these
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+
+# Test and coverage output
+coverage/
+
+# Logs and OS/editor files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Claude Code local settings and private notes
+.claude/settings.local.json
+CLAUDE.local.md

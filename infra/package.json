@@ -1,0 +1,22 @@
+{
+  "name": "@cloud-relay/infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AWS CDK app: stateful and stateless stacks for Cloud Relay.",
+  "type": "module",
+  "scripts": {
+    "cdk": "cdk",
+    "synth": "cdk synth --quiet",
+    "diff": "cdk diff",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.272.0",
+    "constructs": "^10.8.1"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1144.0",
+    "tsx": "^4.23.15"
+  }
+}

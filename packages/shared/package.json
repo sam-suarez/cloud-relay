@@ -1,0 +1,17 @@
+{
+  "name": "@cloud-relay/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Types and zod schemas shared by the web app, Lambdas, and infra.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}

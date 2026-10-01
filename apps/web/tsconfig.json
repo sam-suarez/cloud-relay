@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "jsx": "react-jsx",
+    // Lets `import type { Route } from './+types/home'` find React Router's generated types.
+    "rootDirs": [".", "./.react-router/types"]
+  },
+  "include": ["app", "*.ts", ".react-router/types/**/*"]
+}
