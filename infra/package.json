@@ -8,6 +8,7 @@
     "cdk": "cdk",
     "synth": "cdk synth --quiet",
     "diff": "cdk diff",
+    "deploy": "cdk deploy --all",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

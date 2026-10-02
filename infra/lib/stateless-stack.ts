@@ -1,10 +1,13 @@
 import { Stack, type StackProps } from 'aws-cdk-lib';
 import type { Construct } from 'constructs';
 import type { StatefulStack } from './stateful-stack.ts';
+import { StaticSite } from './static-site.ts';
 
 export interface StatelessStackProps extends StackProps {
   /** Buckets, tables, etc. that this stack's compute reads and writes. */
   stateful: StatefulStack;
+  /** Folder with the built SPA to upload. */
+  webBuildDir: string;
 }
 
 /**
@@ -18,5 +21,10 @@ export class StatelessStack extends Stack {
     // Deploy order: stateful first. CDK also infers this from cross-stack
     // references once we start passing buckets and tables in.
     this.addStackDependency(props.stateful);
+
+    new StaticSite(this, 'Site', {
+      bucket: props.stateful.siteBucket,
+      buildDir: props.webBuildDir,
+    });
   }
 }

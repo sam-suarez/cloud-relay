@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 /**
  * The only Region this project deploys to. The account's project was assigned
  * us-east-2 by AWS, and the account guardrails (SCPs) deny most regional
@@ -7,3 +9,6 @@ export const REGION = 'us-east-2';
 
 /** Applied to every resource so cost reports and the console can filter by project. */
 export const PROJECT_TAG = { key: 'project', value: 'cloud-relay' } as const;
+
+/** The built SPA (`npm run build -w @cloud-relay/web`) that gets uploaded to the site bucket. */
+export const WEB_BUILD_DIR = fileURLToPath(new URL('../../apps/web/build/client', import.meta.url));

@@ -12,11 +12,11 @@ npm run lint         # ESLint (flat config at repo root)
 npm run format       # Prettier
 npm run typecheck    # tsc in every workspace (web runs react-router typegen first)
 npm test             # Vitest in every workspace
-npm run synth        # cdk synth (infra)
+npm run synth        # build web, then cdk synth (infra)
 npm run check        # all of the above
+npm run diff         # build web, then cdk diff (read-only, needs AWS credentials)
+npm run deploy       # build web, then cdk deploy --all (run by a human)
 ```
-
-`cdk diff` is `npm run diff -w @cloud-relay/infra`.
 
 ## Layout
 

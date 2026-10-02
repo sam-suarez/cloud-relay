@@ -22,7 +22,9 @@
     "format:check": "prettier --check .",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "synth": "npm run synth -w @cloud-relay/infra",
+    "synth": "npm run build -w @cloud-relay/web && npm run synth -w @cloud-relay/infra",
+    "diff": "npm run build -w @cloud-relay/web && npm run diff -w @cloud-relay/infra",
+    "deploy": "npm run build -w @cloud-relay/web && npm run deploy -w @cloud-relay/infra",
     "check": "npm run lint && npm run format:check && npm run typecheck && npm run test && npm run synth"
   },
   "devDependencies": {

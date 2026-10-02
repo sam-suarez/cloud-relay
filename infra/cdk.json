@@ -1,5 +1,6 @@
 {
   "app": "npx tsx bin/app.ts",
+  "requireApproval": "broadening",
   "watch": {
     "include": ["bin/**", "lib/**"]
   },
