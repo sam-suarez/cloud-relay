@@ -7,8 +7,8 @@ import { z } from 'zod';
 export const STEPS = [
   'edge', // CloudFront receives the API request
   'api', // API Gateway (HTTP) routes it to the presign Lambda
-  'presign', // Lambda signs an S3 PUT URL
-  'upload', // Browser PUTs the file straight to S3
+  'presign', // Lambda signs an S3 presigned POST (policy + fields)
+  'upload', // Browser POSTs the file straight to S3 as a form
   'enqueue', // S3 event notification lands in SQS
   'resize', // Worker Lambda resizes with sharp
   'moderate', // Rekognition DetectModerationLabels

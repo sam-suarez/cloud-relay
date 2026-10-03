@@ -42,7 +42,9 @@ export default function Home() {
           <UploadPanel
             sessionId={sessionId}
             busy={busy}
-            onRun={({ fail }) =>
+            // Until Phase 6 the mock replays the pipeline under the real runId.
+            onUploaded={(runId) => stream.startRun({ sessionId, runId })}
+            onSimulate={({ fail }) =>
               stream.startRun({ sessionId, failAt: fail ? 'resize' : undefined })
             }
           />

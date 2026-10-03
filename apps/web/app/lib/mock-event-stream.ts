@@ -1,6 +1,8 @@
 import {
+  MAX_UPLOAD_BYTES,
   STEPS,
   STEP_SERVICE,
+  UPLOAD_URL_TTL_SECONDS,
   StepEventSchema,
   type Step,
   type StepDetail,
@@ -16,14 +18,18 @@ import type { EventStream, StepEventListener } from './event-stream.ts';
  * its own timers to fake progress.
  */
 export interface MockEventStream extends EventStream {
-  startRun(options: { sessionId: string; failAt?: Step }): string;
+  /** Pass `runId` to replay the pipeline for a real upload. */
+  startRun(options: { sessionId: string; runId?: string; failAt?: Step }): string;
 }
 
 /** Rough real-world timings, so the mock looks like the real pipeline. */
 const MOCK_STEPS: Record<Step, { durationMs: number; detail: StepDetail }> = {
   edge: { durationMs: 9, detail: { cache: 'Miss', pop: 'ORD58-P1' } },
-  api: { durationMs: 14, detail: { route: 'POST /uploads', throttled: false } },
-  presign: { durationMs: 48, detail: { expiresInSeconds: 300, maxBytes: 5_242_880 } },
+  api: { durationMs: 14, detail: { route: 'POST /api/uploads', throttled: false } },
+  presign: {
+    durationMs: 48,
+    detail: { expiresInSeconds: UPLOAD_URL_TTL_SECONDS, maxBytes: MAX_UPLOAD_BYTES },
+  },
   upload: { durationMs: 640, detail: { bytes: 1_843_200, contentType: 'image/jpeg' } },
   enqueue: { durationMs: 180, detail: { queue: 'uploads', receiveCount: 1 } },
   resize: { durationMs: 910, detail: { sizes: '320, 1024', format: 'webp', outputBytes: 96_412 } },
@@ -69,8 +75,7 @@ export function createMockEventStream(): MockEventStream {
       listeners.clear();
     },
 
-    startRun({ sessionId, failAt }) {
-      const runId = crypto.randomUUID();
+    startRun({ sessionId, runId = crypto.randomUUID(), failAt }) {
       const t0 = Date.now();
       let offset = 0;
 
