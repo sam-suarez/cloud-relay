@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { uuidv7 } from './ids.ts';
+import { uuidv7, uuidv7Time } from './ids.ts';
 
 describe('uuidv7', () => {
   it('is a valid version 7 UUID', () => {
@@ -26,5 +26,18 @@ describe('uuidv7', () => {
 
   it('is random within the same millisecond', () => {
     expect(uuidv7(0)).not.toBe(uuidv7(0));
+  });
+});
+
+describe('uuidv7Time', () => {
+  it('reads back the creation time', () => {
+    const now = Date.UTC(2026, 9, 4, 15, 38, 36, 242);
+
+    expect(uuidv7Time(uuidv7(now))).toBe(now);
+  });
+
+  it('returns null for other UUID versions', () => {
+    expect(uuidv7Time('6f1c2a5e-8a9b-4c1d-9e2f-3a4b5c6d7e8f')).toBeNull();
+    expect(uuidv7Time('not-a-uuid')).toBeNull();
   });
 });

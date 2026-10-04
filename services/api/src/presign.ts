@@ -1,5 +1,6 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
+import { emit } from '@cloud-relay/realtime';
 import {
   CreateUploadRequestSchema,
   MAX_UPLOAD_BYTES,
@@ -9,13 +10,13 @@ import {
   uploadKey,
   uuidv7,
   type CreateUploadResponse,
+  type StepEvent,
 } from '@cloud-relay/shared';
 import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
   Context,
 } from 'aws-lambda';
-import { emit } from './emit.ts';
 
 // Created once per execution environment, outside the handler, so warm
 // invocations reuse it. Region and credentials come from the Lambda runtime
@@ -63,9 +64,9 @@ export async function handler(
   });
   const expiresAt = new Date(started + UPLOAD_URL_TTL_SECONDS * 1000).toISOString();
 
-  await emit({
-    runId,
-    sessionId,
+  const run = { runId, sessionId };
+  await emit(...edgeAndApiSteps(event, run, started), {
+    ...run,
     step: 'presign',
     service: STEP_SERVICE.presign,
     status: 'succeeded',
@@ -83,6 +84,52 @@ export async function handler(
 
   const body: CreateUploadResponse = { url, fields, key, runId, expiresAt };
   return json(200, body);
+}
+
+/**
+ * CloudFront and API Gateway run none of our code, so this Lambda reports their
+ * steps from the evidence they attach to the request:
+ * - `edge`: CloudFront adds an `X-Amz-Cf-Id` header to every request it forwards.
+ *   It reports no timing, so the step has none (requests sent straight to the
+ *   execute-api URL skip CloudFront and have no edge step at all).
+ * - `api`: API Gateway stamps the time it received the request (`timeEpoch`).
+ *   From then until this handler started is routing plus invoking the Lambda,
+ *   including any cold start.
+ */
+function edgeAndApiSteps(
+  event: APIGatewayProxyEventV2,
+  run: { runId: string; sessionId: string },
+  handlerStarted: number,
+): StepEvent[] {
+  const { timeEpoch, routeKey, requestId } = event.requestContext;
+  const cloudFrontId = event.headers?.['x-amz-cf-id'];
+  const receivedAt = new Date(timeEpoch).toISOString();
+  const steps: StepEvent[] = [];
+
+  if (cloudFrontId) {
+    steps.push({
+      ...run,
+      step: 'edge',
+      service: STEP_SERVICE.edge,
+      status: 'succeeded',
+      startedAt: receivedAt,
+      durationMs: null,
+      detail: { cloudFrontRequestId: cloudFrontId },
+      logRef: null,
+    });
+  }
+  steps.push({
+    ...run,
+    step: 'api',
+    service: STEP_SERVICE.api,
+    status: 'succeeded',
+    startedAt: receivedAt,
+    // Two different clocks (API Gateway's and the Lambda's), so never below 0.
+    durationMs: Math.max(0, handlerStarted - timeEpoch),
+    detail: { route: routeKey, apiRequestId: requestId },
+    logRef: null,
+  });
+  return steps;
 }
 
 /** HTTP API (payload v2) passes the body as a string, base64-encoded for some content types. */

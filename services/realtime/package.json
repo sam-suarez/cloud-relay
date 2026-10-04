@@ -1,0 +1,23 @@
+{
+  "name": "@cloud-relay/realtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "WebSocket API: the $connect Lambda, and the emitter every Lambda uses to push step events.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1146.0",
+    "@aws-sdk/client-dynamodb": "^3.1146.0",
+    "@aws-sdk/lib-dynamodb": "^3.1146.0",
+    "@cloud-relay/shared": "^0.0.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.164"
+  }
+}

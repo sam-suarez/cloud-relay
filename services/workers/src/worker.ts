@@ -5,6 +5,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { ChangeMessageVisibilityCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { emit } from '@cloud-relay/realtime';
 import {
   DAILY_ANALYSIS_LIMIT,
   IMAGE_VARIANTS,
@@ -15,6 +16,7 @@ import {
   imageExpiresAt,
   parseUploadKey,
   processedKey,
+  uuidv7Time,
   type ImageFile,
   type ImageRecord,
   type ImageVariant,
@@ -36,7 +38,6 @@ import {
   detectLabels,
   moderate,
 } from './analysis.ts';
-import { emit } from './emit.ts';
 import { requiredEnv } from './env.ts';
 import { renderImages } from './images.ts';
 import { putImageRecord, reserveAnalysis } from './records.ts';
@@ -105,7 +106,7 @@ async function processMessage(record: SQSRecord, context: Context): Promise<void
 }
 
 /**
- * resize → moderate → label → persist. A failure in any step fails the whole
+ * resize → moderate → label → persist → notify. A failure in any step fails the whole
  * attempt, and the retry starts over. Every write is an overwrite of the same
  * key, so running a step twice is harmless.
  */
@@ -119,19 +120,35 @@ async function processUpload(upload: UploadedObject, record: SQSRecord, context:
 
   const attempt = Number(record.attributes.ApproximateReceiveCount);
 
+  // Neither step ran our code, so they have no log line to link to.
+  // upload: the browser POSTed the file to S3. It started when presign issued
+  // the URL (the time inside the UUIDv7 runId) and ended when S3 stored it.
+  const issuedAt = uuidv7Time(ids.runId);
+  const storedAt = Date.parse(upload.eventTime);
   // enqueue: S3 sent the notification and SQS held it until this receive.
-  // AWS did that work, so there is no log line to link to.
   const sentAt = Number(record.attributes.SentTimestamp);
-  await emit({
-    ...ids,
-    step: 'enqueue',
-    service: STEP_SERVICE.enqueue,
-    status: 'succeeded',
-    startedAt: new Date(sentAt).toISOString(),
-    durationMs: Math.max(0, Date.now() - sentAt),
-    detail: { attempt, maxAttempts: WORKER_MAX_ATTEMPTS },
-    logRef: null,
-  });
+  await emit(
+    {
+      ...ids,
+      step: 'upload',
+      service: STEP_SERVICE.upload,
+      status: 'succeeded',
+      startedAt: new Date(issuedAt ?? storedAt).toISOString(),
+      durationMs: issuedAt === null ? null : Math.max(0, storedAt - issuedAt),
+      detail: { bytes: upload.size, key: upload.key },
+      logRef: null,
+    },
+    {
+      ...ids,
+      step: 'enqueue',
+      service: STEP_SERVICE.enqueue,
+      status: 'succeeded',
+      startedAt: new Date(sentAt).toISOString(),
+      durationMs: Math.max(0, Date.now() - sentAt),
+      detail: { attempt, maxAttempts: WORKER_MAX_ATTEMPTS },
+      logRef: null,
+    },
+  );
 
   const run: Run = {
     ...ids,
@@ -202,6 +219,7 @@ async function processUpload(upload: UploadedObject, record: SQSRecord, context:
         categories: [],
       },
     );
+    await notify(run);
     return;
   }
 
@@ -232,6 +250,7 @@ async function processUpload(upload: UploadedObject, record: SQSRecord, context:
         categories: moderation.blocked,
       },
     );
+    await notify(run);
     return;
   }
 
@@ -257,6 +276,7 @@ async function processUpload(upload: UploadedObject, record: SQSRecord, context:
     moderation: moderation.labels,
     rejection: null,
   });
+  await notify(run);
 }
 
 /** Writes the image record to DynamoDB. */
@@ -310,23 +330,31 @@ async function runStep<T>(
   step: Step,
   work: () => Promise<{ result: T; detail: StepDetail }>,
 ): Promise<T> {
-  const started = Date.now();
   const event = {
     sessionId: run.sessionId,
     runId: run.runId,
     step,
     service: STEP_SERVICE[step],
-    startedAt: new Date(started).toISOString(),
     logRef: run.logRef,
   };
   const attempt = run.attempt;
-  await emit({ ...event, status: 'started', durationMs: null, detail: { attempt } });
+  await emit({
+    ...event,
+    status: 'started',
+    startedAt: new Date().toISOString(),
+    durationMs: null,
+    detail: { attempt },
+  });
 
+  // Timed after the `started` push, so durations measure the work, not the WebSocket.
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
   try {
     const { result, detail } = await work();
     await emit({
       ...event,
       status: 'succeeded',
+      startedAt,
       durationMs: Date.now() - started,
       detail: { attempt, ...detail },
     });
@@ -335,6 +363,7 @@ async function runStep<T>(
     await emit({
       ...event,
       status: 'failed',
+      startedAt,
       durationMs: Date.now() - started,
       detail: {
         attempt,
@@ -349,6 +378,37 @@ async function runStep<T>(
     });
     throw error;
   }
+}
+
+/**
+ * notify: the run's final push over the WebSocket API. The `started` event is
+ * itself the message being measured: how long the push took (connection lookup
+ * plus @connections POSTs), and how many browsers received it.
+ */
+async function notify(run: Run): Promise<void> {
+  const event = {
+    sessionId: run.sessionId,
+    runId: run.runId,
+    step: 'notify' as const,
+    service: STEP_SERVICE.notify,
+    logRef: run.logRef,
+  };
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const connections = await emit({
+    ...event,
+    status: 'started',
+    startedAt,
+    durationMs: null,
+    detail: {},
+  });
+  await emit({
+    ...event,
+    status: 'succeeded',
+    startedAt,
+    durationMs: Date.now() - started,
+    detail: { connections },
+  });
 }
 
 /**

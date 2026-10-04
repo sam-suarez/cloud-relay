@@ -1,6 +1,6 @@
 import { STEPS } from '@cloud-relay/shared';
 import { nodeInfo } from '../lib/pipeline.ts';
-import { runStartMs, type RunState } from '../lib/run-state.ts';
+import { formatDuration, runStartMs, type RunState } from '../lib/run-state.ts';
 
 const BAR_COLORS = {
   started: 'bg-amber-400/80 animate-pulse',
@@ -35,10 +35,14 @@ export function TimelineView({ run }: { run: RunState | null }) {
       <ol className="space-y-1.5">
         {rows.map(({ step, state, offset }) => {
           const left = (offset / total) * 100;
+          // A running step stretches to the end; a finished step without a
+          // duration (CloudFront reports none) is a thin marker.
           const width =
             state.durationMs != null
               ? Math.max((state.durationMs / total) * 100, 0.75)
-              : 100 - left;
+              : state.status === 'started'
+                ? 100 - left
+                : 0.75;
           return (
             <li key={step} className="grid grid-cols-[11rem_1fr_4.5rem] items-center gap-3 text-xs">
               <span className="truncate text-slate-300">{nodeInfo(step).title}</span>
@@ -49,7 +53,7 @@ export function TimelineView({ run }: { run: RunState | null }) {
                 />
               </div>
               <span className="text-right tabular-nums text-slate-400">
-                {state.durationMs != null ? `${state.durationMs} ms` : '…'}
+                {formatDuration(state)}
               </span>
             </li>
           );

@@ -23,15 +23,18 @@ export interface MockEventStream extends EventStream {
   startRun(options: { sessionId: string; runId?: string; failAt?: Step }): string;
 }
 
-/** Rough real-world timings, so the mock looks like the real pipeline. */
-const MOCK_STEPS: Record<Step, { durationMs: number; detail: StepDetail }> = {
-  edge: { durationMs: 9, detail: { cache: 'Miss', pop: 'ORD58-P1' } },
-  api: { durationMs: 14, detail: { route: 'POST /api/uploads', throttled: false } },
+/**
+ * Rough real-world timings and the same detail keys the Lambdas send, so the
+ * mock looks like the real pipeline. `null` = the service reports no timing.
+ */
+const MOCK_STEPS: Record<Step, { durationMs: number | null; detail: StepDetail }> = {
+  edge: { durationMs: null, detail: { cloudFrontRequestId: 'mock-cloudfront-request-id==' } },
+  api: { durationMs: 14, detail: { route: 'POST /api/uploads', apiRequestId: 'mock-api-request' } },
   presign: {
     durationMs: 48,
     detail: { expiresInSeconds: UPLOAD_URL_TTL_SECONDS, maxBytes: MAX_UPLOAD_BYTES },
   },
-  upload: { durationMs: 640, detail: { bytes: 1_843_200, contentType: 'image/jpeg' } },
+  upload: { durationMs: 640, detail: { bytes: 1_843_200, key: 'uploads/mock/photo.jpg' } },
   enqueue: { durationMs: 180, detail: { attempt: 1, maxAttempts: 5 } },
   resize: {
     durationMs: 910,
@@ -104,7 +107,8 @@ export function createMockEventStream(): MockEventStream {
       let offset = 0;
 
       for (const step of STEPS) {
-        const { durationMs, detail } = MOCK_STEPS[step];
+        const { durationMs: reported, detail } = MOCK_STEPS[step];
+        const durationMs = reported ?? 0;
         const fails = step === failAt;
         const startedAt = new Date(t0 + offset).toISOString();
         const logRef = LAMBDA_STEPS.has(step)
@@ -117,7 +121,7 @@ export function createMockEventStream(): MockEventStream {
           emit({
             ...base,
             status: fails ? 'failed' : 'succeeded',
-            durationMs,
+            durationMs: reported,
             detail: fails ? { error: 'Simulated failure' } : detail,
           }),
         );

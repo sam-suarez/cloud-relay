@@ -29,3 +29,9 @@ export function uuidv7(now: number = Date.now()): string {
     hex.slice(20),
   ].join('-');
 }
+
+/** The creation time (Unix ms) stored in a UUIDv7, or null if `id` isn't a UUIDv7. */
+export function uuidv7Time(id: string): number | null {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(id)) return null;
+  return parseInt(id.slice(0, 8) + id.slice(9, 13), 16);
+}

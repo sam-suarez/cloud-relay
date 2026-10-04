@@ -1,8 +1,10 @@
 import { Stack, type StackProps } from 'aws-cdk-lib';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import { WEBSOCKET_PATH } from '@cloud-relay/shared';
 import type { Construct } from 'constructs';
 import { ImageWorker } from './image-worker.ts';
+import { RealtimeApi } from './realtime-api.ts';
 import type { StatefulStack } from './stateful-stack.ts';
 import { StaticSite } from './static-site.ts';
 import { UploadApi } from './upload-api.ts';
@@ -37,13 +39,21 @@ export class StatelessStack extends Stack {
 
     // S3 → SQS → this worker → processed bucket, Rekognition, DynamoDB. The
     // queue, buckets and tables live in the stateful stack; this stack only uses them.
-    new ImageWorker(this, 'ImageWorker', {
+    const worker = new ImageWorker(this, 'ImageWorker', {
       uploadsBucket: props.stateful.uploadsBucket,
       processedBucket: props.stateful.processedBucket,
       queue: props.stateful.uploadsQueue,
       imagesTable: props.stateful.imagesTable,
       usageTable: props.stateful.usageTable,
     });
+
+    // The WebSocket API, and permission for both pipeline Lambdas to push step
+    // events through it.
+    const realtime = new RealtimeApi(this, 'Realtime', {
+      connectionsTable: props.stateful.connectionsTable,
+    });
+    realtime.grantEmit(uploadApi.presignFunction);
+    realtime.grantEmit(worker.function);
 
     // Behaviors → /api/* goes to API Gateway instead of S3, so the SPA can call
     // a relative /api/uploads on its own domain: no CORS, no API URL to configure.
@@ -66,6 +76,25 @@ export class StatelessStack extends Stack {
         // uses Host to find the API and would reject the CloudFront domain.
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
         responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+      },
+    );
+
+    // Behaviors → /ws goes to the WebSocket API. CloudFront needs no WebSocket
+    // switch: it forwards the HTTP "Upgrade: websocket" handshake (a GET) like
+    // any request, as long as the Sec-WebSocket-* headers reach the origin and
+    // nothing is cached. The path matches the stage name, so the origin URL is
+    // https://{api-id}.execute-api…/ws, and the SPA connects to its own domain.
+    site.distribution.addBehavior(
+      WEBSOCKET_PATH,
+      new origins.HttpOrigin(realtime.domainName, {
+        protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+      }),
+      {
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        // Forwards the Sec-WebSocket-* headers and the ?sessionId= query string.
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
       },
     );
   }

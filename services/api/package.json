@@ -11,6 +11,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1145.0",
     "@aws-sdk/s3-presigned-post": "^3.1145.0",
+    "@cloud-relay/realtime": "^0.0.0",
     "@cloud-relay/shared": "^0.0.0"
   },
   "devDependencies": {

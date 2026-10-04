@@ -5,9 +5,12 @@ import { UploadError, uploadPhoto } from '../lib/upload.ts';
 interface Props {
   sessionId: string;
   busy: boolean;
+  /** Runs before asking for an upload URL, e.g. waiting for the WebSocket to open. */
+  beforeUpload?: () => Promise<unknown>;
   /** Called after S3 accepted the file, with the runId the presign Lambda assigned. */
-  onUploaded: (runId: string, options: { simulateFailure: boolean }) => void;
-  onSimulate: (options: { fail: boolean }) => void;
+  onUploaded?: (runId: string, options: { simulateFailure: boolean }) => void;
+  /** Mock stream only: plays a scripted run without uploading anything. */
+  onSimulate?: (options: { fail: boolean }) => void;
 }
 
 type UploadState =
@@ -19,7 +22,7 @@ type UploadState =
 const ACCEPT = Object.keys(UPLOAD_CONTENT_TYPES).join(',');
 
 /** Real upload through the API (presigned POST to S3), plus scripted runs on the mock stream. */
-export function UploadPanel({ sessionId, busy, onUploaded, onSimulate }: Props) {
+export function UploadPanel({ sessionId, busy, beforeUpload, onUploaded, onSimulate }: Props) {
   const [state, setState] = useState<UploadState>({ status: 'idle' });
   const [simulateFailure, setSimulateFailure] = useState(false);
   const disabled = busy || state.status === 'uploading';
@@ -27,9 +30,12 @@ export function UploadPanel({ sessionId, busy, onUploaded, onSimulate }: Props) 
   async function upload(file: File) {
     setState({ status: 'uploading' });
     try {
+      // The first events (edge, api, presign) are pushed while this request is
+      // in flight, so the socket must already be open to receive them.
+      await beforeUpload?.();
       const { key, runId } = await uploadPhoto(file, sessionId, { simulateFailure });
       setState({ status: 'done', key });
-      onUploaded(runId, { simulateFailure });
+      onUploaded?.(runId, { simulateFailure });
     } catch (error) {
       const message =
         error instanceof UploadError ? error.message : 'Upload failed. Check your connection.';
@@ -84,27 +90,31 @@ export function UploadPanel({ sessionId, busy, onUploaded, onSimulate }: Props) 
       )}
       {state.status === 'error' && <p className="text-xs text-rose-300">{state.message}</p>}
 
-      <p className="border-t border-slate-800 pt-3 text-xs text-slate-400">
-        The diagram still plays the mock event stream (live events arrive in Phase 6).
-      </p>
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => onSimulate({ fail: false })}
-          className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-        >
-          Simulate upload
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => onSimulate({ fail: true })}
-          className="rounded-lg border border-rose-500/60 px-3 py-1.5 text-sm text-rose-200 hover:bg-rose-950 disabled:opacity-50"
-        >
-          Simulate worker failure
-        </button>
-      </div>
+      {onSimulate && (
+        <>
+          <p className="border-t border-slate-800 pt-3 text-xs text-slate-400">
+            Local development: the diagram plays a scripted mock event stream.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onSimulate({ fail: false })}
+              className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+            >
+              Simulate upload
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onSimulate({ fail: true })}
+              className="rounded-lg border border-rose-500/60 px-3 py-1.5 text-sm text-rose-200 hover:bg-rose-950 disabled:opacity-50"
+            >
+              Simulate worker failure
+            </button>
+          </div>
+        </>
+      )}
       <p className="font-mono text-[10px] text-slate-500">session {sessionId}</p>
     </section>
   );

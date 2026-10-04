@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { nodeInfo, type NodeId } from '../lib/pipeline.ts';
-import type { RunState } from '../lib/run-state.ts';
+import { formatDuration, type RunState } from '../lib/run-state.ts';
 
 interface Props {
   nodeId: NodeId | null;
@@ -46,7 +46,7 @@ export function NodeDetailPanel({ nodeId, run, onClose }: Props) {
             <dt className="text-slate-500">status</dt>
             <dd>{state.status}</dd>
             <dt className="text-slate-500">duration</dt>
-            <dd>{state.durationMs != null ? `${state.durationMs} ms` : '…'}</dd>
+            <dd>{formatDuration(state)}</dd>
             {state.attempts > 1 && (
               <>
                 <dt className="text-slate-500">attempts</dt>

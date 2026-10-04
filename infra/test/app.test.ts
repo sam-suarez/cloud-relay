@@ -245,14 +245,17 @@ describe('upload API', () => {
     stateless.hasResourceProperties('AWS::Logs::LogGroup', { RetentionInDays: 7 });
   });
 
-  it('gives the presign role only s3:PutObject on uploads/*, plus basic logging', () => {
+  it('gives the presign role s3:PutObject on uploads/* and the emit permissions, plus basic logging', () => {
     const { stateless } = synthTemplates();
     const { managed, statements } = roleStatements(stateless, presignProps);
 
     expect(managed).toHaveLength(1);
     expect(JSON.stringify(managed)).toContain('service-role/AWSLambdaBasicExecutionRole');
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toMatchObject({ Effect: 'Allow', Action: 's3:PutObject' });
+    expect(statements.map((s) => s.Action)).toEqual([
+      's3:PutObject',
+      'execute-api:ManageConnections',
+      ['dynamodb:Query', 'dynamodb:DeleteItem'],
+    ]);
     // Resource is the bucket ARN (imported from the stateful stack) + "/uploads/*".
     expect(JSON.stringify(statements[0]?.Resource)).toMatch(/"\/uploads\/\*"\]\]\}$/);
   });
@@ -264,7 +267,6 @@ describe('upload API', () => {
       ProtocolType: 'HTTP',
       CorsConfiguration: Match.absent(),
     });
-    stateless.resourceCountIs('AWS::ApiGatewayV2::Route', 1);
     stateless.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'POST /api/uploads' });
     stateless.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
       IntegrationType: 'AWS_PROXY',
@@ -275,7 +277,6 @@ describe('upload API', () => {
   it('throttles the $default stage to 1 request/s with a burst of 5', () => {
     const { stateless } = synthTemplates();
 
-    stateless.resourceCountIs('AWS::ApiGatewayV2::Stage', 1);
     stateless.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
       StageName: '$default',
       AutoDeploy: true,
@@ -288,7 +289,7 @@ describe('upload API', () => {
 
     stateless.hasResourceProperties('AWS::CloudFront::Distribution', {
       DistributionConfig: Match.objectLike({
-        CacheBehaviors: [
+        CacheBehaviors: Match.arrayWith([
           Match.objectLike({
             PathPattern: '/api/*',
             AllowedMethods: Match.arrayWith(['POST']),
@@ -298,7 +299,7 @@ describe('upload API', () => {
               cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER.originRequestPolicyId,
             FunctionAssociations: Match.absent(),
           }),
-        ],
+        ]),
         Origins: Match.arrayWith([
           Match.objectLike({
             DomainName: Match.objectLike({
@@ -461,6 +462,8 @@ describe('async pipeline: worker', () => {
         'sqs:GetQueueUrl',
         'sqs:ReceiveMessage',
       ],
+      'execute-api:ManageConnections',
+      ['dynamodb:DeleteItem', 'dynamodb:Query'],
     ]);
     const resources = statements.map((s) => JSON.stringify(s.Resource));
     expect(resources[0]).toMatch(/"\/uploads\/\*"\]\]\}$/);
@@ -469,6 +472,7 @@ describe('async pipeline: worker', () => {
     expect(resources.filter((r) => r === '"*"')).toEqual([resources[2]]);
     expect(resources[3]).toMatch(/ImagesTable/);
     expect(resources[4]).toMatch(/UsageTable/);
+    expect(resources[7]).toMatch(/ConnectionsTable/);
   });
 
   it('bundles the linux-arm64 (glibc) build of sharp and no other platform', () => {
@@ -515,7 +519,7 @@ describe('image records', () => {
   it('keeps one usage counter per day, with TTL', () => {
     const { stateful } = synthTemplates();
 
-    stateful.resourceCountIs('AWS::DynamoDB::Table', 2);
+    stateful.resourceCountIs('AWS::DynamoDB::Table', 3);
     stateful.hasResource('AWS::DynamoDB::Table', {
       Properties: {
         KeySchema: [{ AttributeName: 'day', KeyType: 'HASH' }],
@@ -523,6 +527,120 @@ describe('image records', () => {
         TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
       },
       DeletionPolicy: 'Delete',
+    });
+  });
+});
+
+describe('real time: WebSocket API', () => {
+  const connectProps = { Description: Match.stringLikeRegexp('WebSocket connection') };
+
+  it('keys connections by session and connection ID, on demand, with TTL on expiresAt', () => {
+    const { stateful } = synthTemplates();
+
+    stateful.hasResource('AWS::DynamoDB::Table', {
+      Properties: {
+        KeySchema: [
+          { AttributeName: 'sessionId', KeyType: 'HASH' },
+          { AttributeName: 'connectionId', KeyType: 'RANGE' },
+        ],
+        BillingMode: 'PAY_PER_REQUEST',
+        TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+        GlobalSecondaryIndexes: Match.absent(),
+      },
+      DeletionPolicy: 'Delete',
+    });
+  });
+
+  it('has only a $connect route (no $disconnect, no message routes)', () => {
+    const { stateless } = synthTemplates();
+    const api = logicalId(stateless, 'AWS::ApiGatewayV2::Api', { ProtocolType: 'WEBSOCKET' });
+    const routes = stateless.findResources('AWS::ApiGatewayV2::Route', {
+      Properties: { ApiId: { Ref: api } },
+    });
+
+    expect(Object.values(routes).map((r) => r.Properties.RouteKey)).toEqual(['$connect']);
+    stateless.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
+      ApiId: { Ref: api },
+      IntegrationType: 'AWS_PROXY',
+    });
+  });
+
+  it('deploys the "ws" stage: $connect throttled to 1/s (burst 3), @connections posts to 100/s', () => {
+    const { stateless } = synthTemplates();
+    const api = logicalId(stateless, 'AWS::ApiGatewayV2::Api', { ProtocolType: 'WEBSOCKET' });
+
+    stateless.hasResource('AWS::ApiGatewayV2::Stage', {
+      Properties: {
+        ApiId: { Ref: api },
+        StageName: 'ws',
+        AutoDeploy: true,
+        // The default also limits PostToConnection (429s at 1/s), and must be
+        // explicit: removing it from the template leaves the old value.
+        DefaultRouteSettings: { ThrottlingRateLimit: 100, ThrottlingBurstLimit: 200 },
+        RouteSettings: { $connect: { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 3 } },
+      },
+      // Route settings name a route that must already exist.
+      DependsOn: Match.arrayWith([Match.stringLikeRegexp('connectRoute')]),
+    });
+  });
+
+  it('runs the $connect Lambda on Node 24, arm64, 256 MB, 3 s, allowed only to PutItem', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::Lambda::Function', {
+      ...connectProps,
+      Runtime: 'nodejs24.x',
+      Architectures: ['arm64'],
+      MemorySize: 256,
+      Timeout: 3,
+      Environment: { Variables: { CONNECTIONS_TABLE: Match.anyValue() } },
+      LoggingConfig: { LogGroup: Match.anyValue() },
+    });
+    const { statements } = roleStatements(stateless, connectProps);
+    expect(statements.map((s) => s.Action)).toEqual(['dynamodb:PutItem']);
+    expect(JSON.stringify(statements[0]?.Resource)).toMatch(/ConnectionsTable/);
+  });
+
+  it("lets presign and the worker post only to this stage's @connections", () => {
+    const { stateless } = synthTemplates();
+
+    for (const props of [
+      { Description: Match.stringLikeRegexp('presigned S3 POST') },
+      { Description: Match.stringLikeRegexp('sharp') },
+    ]) {
+      stateless.hasResourceProperties('AWS::Lambda::Function', {
+        ...props,
+        Environment: {
+          Variables: Match.objectLike({
+            CONNECTIONS_TABLE: Match.anyValue(),
+            WEBSOCKET_CALLBACK_URL: Match.anyValue(),
+          }),
+        },
+      });
+      const manage = roleStatements(stateless, props).statements.find(
+        (s) => s.Action === 'execute-api:ManageConnections',
+      );
+      expect(JSON.stringify(manage?.Resource)).toMatch(/"\/ws\/\*\/@connections\/\*"\]\]\}$/);
+    }
+  });
+
+  it('serves /ws from the WebSocket API through CloudFront, uncached, forwarding the handshake headers', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        CacheBehaviors: Match.arrayWith([
+          Match.objectLike({
+            PathPattern: '/ws',
+            AllowedMethods: ['GET', 'HEAD'],
+            ViewerProtocolPolicy: 'https-only',
+            CachePolicyId: cloudfront.CachePolicy.CACHING_DISABLED.cachePolicyId,
+            OriginRequestPolicyId:
+              cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER.originRequestPolicyId,
+            FunctionAssociations: Match.absent(),
+          }),
+        ]),
+      }),
     });
   });
 });

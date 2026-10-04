@@ -5,11 +5,11 @@ import {
   type CreateUploadResponse,
 } from '@cloud-relay/shared';
 import type { APIGatewayProxyEventV2, Context } from 'aws-lambda';
+import { emit } from '@cloud-relay/realtime';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emit } from './emit.ts';
 import { handler } from './presign.ts';
 
-vi.mock('./emit.ts', () => ({ emit: vi.fn() }));
+vi.mock('@cloud-relay/realtime', () => ({ emit: vi.fn() }));
 
 const sessionId = '0b1c2d3e-4f50-4a6b-8c7d-8e9fa0b1c2d3';
 const context = {
@@ -17,13 +17,27 @@ const context = {
   logGroupName: '/aws/lambda/presign',
 } as Context;
 
-function request(body: unknown, { base64 = false } = {}) {
+/** When API Gateway received the request: 30 ms before the handler runs. */
+let receivedAt: number;
+
+function request(body: unknown, { base64 = false, viaCloudFront = true } = {}) {
   const raw = typeof body === 'string' ? body : JSON.stringify(body);
   return {
     body: base64 ? Buffer.from(raw).toString('base64') : raw,
     isBase64Encoded: base64,
-  } as APIGatewayProxyEventV2;
+    // CloudFront adds this header to every request it forwards to the origin.
+    headers: viaCloudFront ? { 'x-amz-cf-id': 'cf-id-abc==' } : {},
+    requestContext: {
+      routeKey: 'POST /api/uploads',
+      requestId: 'apigw-req-1',
+      timeEpoch: receivedAt,
+    },
+  } as unknown as APIGatewayProxyEventV2;
 }
+
+/** Every step event the handler emitted, validated against the shared schema. */
+const emitted = () =>
+  vi.mocked(emit).mock.calls.flatMap((events) => events.map((e) => StepEventSchema.parse(e)));
 
 async function invoke(event: APIGatewayProxyEventV2) {
   const result = await handler(event, context);
@@ -40,6 +54,7 @@ function decodePolicy(fields: Record<string, string>) {
 
 beforeEach(() => {
   vi.mocked(emit).mockClear();
+  receivedAt = Date.now() - 30;
 });
 
 describe('presign handler', () => {
@@ -100,20 +115,42 @@ describe('presign handler', () => {
     expect(a.runId[14]).toBe('7'); // the UUID version digit
   });
 
-  it('emits a valid presign step event for the run', async () => {
+  it('emits edge, api and presign for the run, in one call', async () => {
     const body = (await invoke(request(valid))).json as CreateUploadResponse;
 
     expect(emit).toHaveBeenCalledOnce();
-    const event = StepEventSchema.parse(vi.mocked(emit).mock.calls[0]?.[0]);
-    expect(event).toMatchObject({
+    const [edge, api, presign] = emitted();
+    expect(emitted().map((e) => `${e.step}:${e.status}`)).toEqual([
+      'edge:succeeded',
+      'api:succeeded',
+      'presign:succeeded',
+    ]);
+    expect(edge).toMatchObject({
       runId: body.runId,
       sessionId,
-      step: 'presign',
+      service: 'cloudfront',
+      startedAt: new Date(receivedAt).toISOString(),
+      durationMs: null, // CloudFront reports no timing
+      detail: { cloudFrontRequestId: 'cf-id-abc==' },
+      logRef: null,
+    });
+    expect(api).toMatchObject({
+      service: 'api-gateway-http',
+      detail: { route: 'POST /api/uploads', apiRequestId: 'apigw-req-1' },
+      logRef: null,
+    });
+    expect(api?.durationMs).toBeGreaterThanOrEqual(30);
+    expect(presign).toMatchObject({
       service: 'lambda',
-      status: 'succeeded',
       detail: { key: body.key, expiresInSeconds: 60 },
       logRef: { logGroup: '/aws/lambda/presign', requestId: 'req-123' },
     });
+  });
+
+  it('has no edge step when the request skipped CloudFront (the execute-api URL)', async () => {
+    await invoke(request(valid, { viaCloudFront: false }));
+
+    expect(emitted().map((e) => e.step)).toEqual(['api', 'presign']);
   });
 
   it('accepts a base64-encoded body', async () => {
@@ -128,7 +165,7 @@ describe('presign handler', () => {
     ['a file over 5 MB', { ...valid, size: MAX_UPLOAD_BYTES + 1 }],
     ['a session ID that is not a UUID', { ...valid, sessionId: 'abc' }],
   ])('rejects %s with 400 and emits nothing', async (_label, body) => {
-    const event = body === undefined ? ({} as APIGatewayProxyEventV2) : request(body);
+    const event = body === undefined ? { ...request(''), body: undefined } : request(body);
     const res = await invoke(event);
 
     expect(res.statusCode).toBe(400);

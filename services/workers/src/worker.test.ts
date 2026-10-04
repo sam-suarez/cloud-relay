@@ -12,23 +12,26 @@ import {
 } from '@aws-sdk/client-s3';
 import { ChangeMessageVisibilityCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { emit } from '@cloud-relay/realtime';
 import {
   ImageRecordSchema,
   StepEventSchema,
   uploadKey,
+  uuidv7,
   type ImageRecord,
   type StepEvent,
 } from '@cloud-relay/shared';
 import type { Context, SQSEvent, SQSRecord } from 'aws-lambda';
 import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { emit } from './emit.ts';
 import { handler } from './worker.ts';
 
-vi.mock('./emit.ts', () => ({ emit: vi.fn() }));
+// Each call reaches one open browser tab.
+vi.mock('@cloud-relay/realtime', () => ({ emit: vi.fn(async () => 1) }));
 
 const sessionId = '0b1c2d3e-4f50-4a6b-8c7d-8e9fa0b1c2d3';
-const runId = '6f1c2a5e-8a9b-4c1d-9e2f-3a4b5c6d7e8f';
+// Presign issued the upload URL 1.441 s before S3 stored the object (eventTime below).
+const runId = uuidv7(Date.parse('2026-10-03T17:52:51.000Z'));
 const key = uploadKey(sessionId, runId, 'image/jpeg');
 const context = { awsRequestId: 'req-456', logGroupName: '/aws/lambda/worker' } as Context;
 
@@ -93,7 +96,9 @@ const invoke = (...records: SQSRecord[]) => handler({ Records: records } as SQSE
 
 /** The step events emitted so far, validated against the shared schema. */
 const emitted = () =>
-  vi.mocked(emit).mock.calls.map(([event]) => StepEventSchema.parse(event) as StepEvent);
+  vi
+    .mocked(emit)
+    .mock.calls.flatMap((events) => events.map((e) => StepEventSchema.parse(e) as StepEvent));
 
 beforeEach(async () => {
   photo = await sharp({ create: { width: 1600, height: 1200, channels: 3, background: '#f00' } })
@@ -136,6 +141,7 @@ function storedRecord(): ImageRecord {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(emit).mockClear();
+  vi.mocked(emit).mockImplementation(async () => 1);
 });
 
 describe('worker handler', () => {
@@ -162,10 +168,11 @@ describe('worker handler', () => {
     expect(sqsSend).not.toHaveBeenCalled();
   });
 
-  it('emits enqueue, then each step started and succeeded, for the run', async () => {
+  it('emits upload and enqueue, then each step started and succeeded, then notify', async () => {
     await invoke(sqsRecord(s3Notification()));
 
     expect(emitted().map((e) => [e.step, e.status])).toEqual([
+      ['upload', 'succeeded'],
       ['enqueue', 'succeeded'],
       ['resize', 'started'],
       ['resize', 'succeeded'],
@@ -175,8 +182,19 @@ describe('worker handler', () => {
       ['label', 'succeeded'],
       ['persist', 'started'],
       ['persist', 'succeeded'],
+      ['notify', 'started'],
+      ['notify', 'succeeded'],
     ]);
-    const [enqueue, , done] = emitted();
+    const [upload, enqueue, , done] = emitted();
+    expect(upload).toMatchObject({
+      runId,
+      sessionId,
+      service: 's3',
+      startedAt: '2026-10-03T17:52:51.000Z',
+      durationMs: 1441,
+      detail: { bytes: 2048, key },
+      logRef: null,
+    });
     expect(enqueue).toMatchObject({ runId, sessionId, service: 'sqs', logRef: null });
     expect(enqueue?.detail).toEqual({ attempt: 1, maxAttempts: 5 });
     expect(done).toMatchObject({
@@ -184,6 +202,34 @@ describe('worker handler', () => {
       logRef: { logGroup: '/aws/lambda/worker', requestId: 'req-456' },
       detail: { attempt: 1, format: 'webp', display: '1280×960', thumb: '320×240' },
     });
+  });
+
+  it('reports how many browsers the final push reached', async () => {
+    await invoke(sqsRecord(s3Notification()));
+
+    expect(emitted().at(-1)).toMatchObject({
+      step: 'notify',
+      service: 'api-gateway-websocket',
+      status: 'succeeded',
+      detail: { connections: 1 },
+      logRef: { logGroup: '/aws/lambda/worker' },
+    });
+    expect(emitted().at(-1)?.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps the WebSocket push out of the step durations', async () => {
+    vi.mocked(emit).mockImplementation(async (...events) => {
+      // A slow `started` push must not count as resize time.
+      if (events[0]?.step === 'resize' && events[0].status === 'started') {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      return 1;
+    });
+
+    await invoke(sqsRecord(s3Notification()));
+
+    const resize = emitted().find((e) => e.step === 'resize' && e.status === 'succeeded');
+    expect(resize?.durationMs).toBeLessThan(200);
   });
 
   it('sends Rekognition the in-memory JPEG, with our thresholds', async () => {
@@ -269,6 +315,7 @@ describe('worker handler', () => {
       { Bucket: 'test-processed-bucket', Key: `processed/${sessionId}/${runId}/thumb.webp` },
     ]);
     expect(emitted().map((e) => `${e.step}:${e.status}`)).not.toContain('label:started');
+    expect(emitted().at(-1)).toMatchObject({ step: 'notify', status: 'succeeded' });
     expect(
       emitted().find((e) => e.step === 'moderate' && e.status === 'succeeded')?.detail,
     ).toMatchObject({
@@ -310,6 +357,7 @@ describe('worker handler', () => {
     });
     expect(sent(s3Send, DeleteObjectCommand)).toHaveLength(3);
     expect(emitted().map((e) => e.step)).not.toContain('moderate');
+    expect(emitted().at(-1)).toMatchObject({ step: 'notify', status: 'succeeded' });
   });
 
   it('fails and retries the attempt when Rekognition errors', async () => {

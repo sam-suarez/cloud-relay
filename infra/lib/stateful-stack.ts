@@ -8,6 +8,7 @@ import {
   PROCESSED_PREFIX,
   UPLOADS_PREFIX,
   WORKER_MAX_ATTEMPTS,
+  type ConnectionRecord,
   type ImageRecord,
 } from '@cloud-relay/shared';
 import type { Construct } from 'constructs';
@@ -36,6 +37,8 @@ export class StatefulStack extends Stack {
   readonly imagesTable: dynamodb.Table;
   /** One counter per UTC day, for the daily Rekognition limit. */
   readonly usageTable: dynamodb.Table;
+  /** One item per open WebSocket, listed per session. */
+  readonly connectionsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -173,6 +176,26 @@ export class StatefulStack extends Stack {
       partitionKey: { name: 'day', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'expiresAt',
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    // Which browser tabs are watching which session. The $connect Lambda writes a
+    // row; every emitting Lambda Queries the session's rows and pushes to each
+    // connection. No secondary index: lookups are always by session.
+    // No $disconnect route either (API Gateway only calls it on a best-effort
+    // basis): rows expire with TTL after 2 hours, the longest a WebSocket can
+    // live, and the emitter deletes rows whose connection has gone.
+    this.connectionsTable = new dynamodb.Table(this, 'ConnectionsTable', {
+      partitionKey: {
+        name: 'sessionId' satisfies keyof ConnectionRecord,
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: 'connectionId' satisfies keyof ConnectionRecord,
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt' satisfies keyof ConnectionRecord,
       removalPolicy: RemovalPolicy.DESTROY,
     });
   }

@@ -23,6 +23,7 @@ export interface UploadApiProps {
  */
 export class UploadApi extends Construct {
   readonly httpApi: apigwv2.HttpApi;
+  readonly presignFunction: nodejs.NodejsFunction;
   /** execute-api hostname, used as the CloudFront origin. */
   readonly domainName: string;
 
@@ -57,6 +58,7 @@ export class UploadApi extends Construct {
         sourceMap: true, // also sets NODE_OPTIONS=--enable-source-maps for readable stack traces
       },
     });
+    this.presignFunction = presign;
 
     // The execution role CDK created for this function (one role per function)
     // already has AWSLambdaBasicExecutionRole for logs. Signing a POST needs
