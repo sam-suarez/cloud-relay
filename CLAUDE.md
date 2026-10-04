@@ -35,6 +35,6 @@ Workspace packages export TypeScript source directly (`"exports": { ".": "./src/
 - **No account IDs, ARNs, domains or secrets in code or docs.** The account comes from credentials (`CDK_DEFAULT_ACCOUNT`); config comes from environment, CDK context or SSM Parameter Store. `cdk.context.json` is gitignored.
 - **Keep costs near zero**: no NAT gateways, no always-on EC2, no provisioned databases. Aurora auto-pauses; Fargate runs only on demand in a public subnet with a public IP.
 - **Least privilege**: one IAM role per Lambda/task with only the actions it needs (prefer CDK `grant*` methods). No long-lived access keys.
-- **Public-demo guardrails**: upload size/type limits, API throttling, reserved concurrency on the worker, image auto-deletion (S3 lifecycle rules + DynamoDB TTL), moderation check, budget alarm.
+- **Public-demo guardrails**: upload size/type limits, API throttling, maximum concurrency on the worker's SQS trigger (the account's 10-execution Lambda limit rules out reserved concurrency), image auto-deletion (S3 lifecycle rules + DynamoDB TTL), moderation check, budget alarm.
 - Readable code over clever code; short comments where an AWS concept isn't obvious.
 - Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`, `ci:`).

@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
@@ -7,17 +9,36 @@ import { buildApp } from '../lib/app.ts';
 
 const webBuildDir = fileURLToPath(new URL('./fixtures/site', import.meta.url));
 
-// Synthesizing bundles the Lambdas with esbuild, so do it once for all tests.
-let templates: { stateful: Template; stateless: Template } | undefined;
+// Synthesizing bundles the Lambdas with esbuild (and npm-installs sharp), so do
+// it once for all tests.
+let templates: { stateful: Template; stateless: Template; assemblyDir: string } | undefined;
 function synthTemplates() {
   if (!templates) {
-    const { stateful, stateless } = buildApp(new App(), { webBuildDir });
+    const app = new App();
+    const { stateful, stateless } = buildApp(app, { webBuildDir });
     templates = {
       stateful: Template.fromStack(stateful),
       stateless: Template.fromStack(stateless),
+      assemblyDir: app.synth().directory,
     };
   }
   return templates;
+}
+
+/** Every IAM statement attached to the role of the one function matching `props`. */
+function roleStatements(template: Template, props: object) {
+  const resources = template.toJSON().Resources;
+  const fn = logicalId(template, 'AWS::Lambda::Function', props);
+  const role = resources[fn].Properties.Role['Fn::GetAtt'][0] as string;
+  const policies = template.findResources('AWS::IAM::Policy', {
+    Properties: { Roles: [{ Ref: role }] },
+  });
+  return {
+    managed: resources[role].Properties.ManagedPolicyArns as unknown[],
+    statements: Object.values(policies).flatMap(
+      (p) => p.Properties.PolicyDocument.Statement as { Action: unknown; Resource: unknown }[],
+    ),
+  };
 }
 
 /** Logical ID of the one resource of `type` matching `props`. */
@@ -61,6 +82,7 @@ describe('static site', () => {
     const { stateful } = synthTemplates();
     const siteBucket = logicalId(stateful, 'AWS::S3::Bucket', {
       CorsConfiguration: Match.absent(),
+      LifecycleConfiguration: Match.absent(),
     });
     const props = stateful.toJSON().Resources[siteBucket].Properties;
 
@@ -225,20 +247,10 @@ describe('upload API', () => {
 
   it('gives the presign role only s3:PutObject on uploads/*, plus basic logging', () => {
     const { stateless } = synthTemplates();
-    const resources = stateless.toJSON().Resources;
-    const fn = logicalId(stateless, 'AWS::Lambda::Function', presignProps);
-    const role = resources[fn].Properties.Role['Fn::GetAtt'][0] as string;
+    const { managed, statements } = roleStatements(stateless, presignProps);
 
-    const managed = resources[role].Properties.ManagedPolicyArns as unknown[];
     expect(managed).toHaveLength(1);
     expect(JSON.stringify(managed)).toContain('service-role/AWSLambdaBasicExecutionRole');
-
-    const policies = stateless.findResources('AWS::IAM::Policy', {
-      Properties: { Roles: [{ Ref: role }] },
-    });
-    const statements = Object.values(policies).flatMap(
-      (p) => p.Properties.PolicyDocument.Statement as { Action: unknown; Resource: unknown }[],
-    );
     expect(statements).toHaveLength(1);
     expect(statements[0]).toMatchObject({ Effect: 'Allow', Action: 's3:PutObject' });
     // Resource is the bucket ARN (imported from the stateful stack) + "/uploads/*".
@@ -297,5 +309,171 @@ describe('upload API', () => {
         ]),
       }),
     });
+  });
+});
+
+describe('async pipeline: buckets and queues', () => {
+  it('keeps processed images in a private bucket for a day', () => {
+    const { stateful } = synthTemplates();
+
+    stateful.hasResource('AWS::S3::Bucket', {
+      Properties: {
+        CorsConfiguration: Match.absent(),
+        PublicAccessBlockConfiguration: Match.objectLike({ RestrictPublicBuckets: true }),
+        OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+        LifecycleConfiguration: {
+          Rules: [
+            {
+              Id: 'expire-processed',
+              Status: 'Enabled',
+              Prefix: 'processed/',
+              ExpirationInDays: 1,
+            },
+          ],
+        },
+      },
+      DeletionPolicy: 'Retain',
+    });
+  });
+
+  it('gives the uploads queue a 60 s lease (6 × the worker timeout), 1-day retention and a DLQ after 5 receives', () => {
+    const { stateful } = synthTemplates();
+    const dlq = logicalId(stateful, 'AWS::SQS::Queue', { RedrivePolicy: Match.absent() });
+
+    stateful.hasResourceProperties('AWS::SQS::Queue', {
+      VisibilityTimeout: 60,
+      MessageRetentionPeriod: 86400,
+      SqsManagedSseEnabled: true,
+      RedrivePolicy: { deadLetterTargetArn: { 'Fn::GetAtt': [dlq, 'Arn'] }, maxReceiveCount: 5 },
+    });
+    // Longer than the source queue: retention counts from the original enqueue time.
+    stateful.hasResourceProperties('AWS::SQS::Queue', {
+      MessageRetentionPeriod: 345600,
+      SqsManagedSseEnabled: true,
+      RedrivePolicy: Match.absent(),
+    });
+  });
+
+  it('notifies the queue for objects created under uploads/ only', () => {
+    const { stateful } = synthTemplates();
+
+    stateful.hasResourceProperties('Custom::S3BucketNotifications', {
+      NotificationConfiguration: {
+        QueueConfigurations: [
+          {
+            Events: ['s3:ObjectCreated:*'],
+            Filter: { Key: { FilterRules: [{ Name: 'prefix', Value: 'uploads/' }] } },
+            QueueArn: Match.anyValue(),
+          },
+        ],
+      },
+    });
+  });
+
+  it('lets only S3, for the uploads bucket in this account, send to the queue, over HTTPS', () => {
+    const { stateful } = synthTemplates();
+    const uploadsBucket = logicalId(stateful, 'AWS::S3::Bucket', {
+      CorsConfiguration: Match.anyValue(),
+    });
+
+    stateful.hasResourceProperties('AWS::SQS::QueuePolicy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: 'Deny',
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          }),
+          Match.objectLike({
+            Effect: 'Allow',
+            Principal: { Service: 's3.amazonaws.com' },
+            Action: Match.arrayWith(['sqs:SendMessage']),
+            Condition: { ArnLike: { 'aws:SourceArn': { 'Fn::GetAtt': [uploadsBucket, 'Arn'] } } },
+          }),
+          Match.objectLike({
+            Sid: 'DenyS3FromOtherAccounts',
+            Effect: 'Deny',
+            Principal: { Service: 's3.amazonaws.com' },
+            Condition: { StringNotEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } },
+          }),
+        ]),
+      },
+    });
+  });
+});
+
+describe('async pipeline: worker', () => {
+  const workerProps = { Description: Match.stringLikeRegexp('sharp') };
+
+  it('runs on Node 24, arm64, 1024 MB, with a 10 s timeout and 1-week logs', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::Lambda::Function', {
+      ...workerProps,
+      Runtime: 'nodejs24.x',
+      Architectures: ['arm64'],
+      MemorySize: 1024,
+      Timeout: 10,
+      Environment: {
+        Variables: Match.objectLike({
+          PROCESSED_BUCKET: Match.anyValue(),
+          QUEUE_URL: Match.anyValue(),
+        }),
+      },
+      LoggingConfig: { LogGroup: Match.anyValue() },
+    });
+  });
+
+  it('is triggered by the queue one message at a time, with partial batch failures and at most 2 copies', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    stateless.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+      BatchSize: 1,
+      FunctionResponseTypes: ['ReportBatchItemFailures'],
+      ScalingConfig: { MaximumConcurrency: 2 },
+    });
+    // The account's concurrency limit (10) leaves no room for reserved concurrency.
+    stateless.hasResourceProperties('AWS::Lambda::Function', {
+      ...workerProps,
+      ReservedConcurrentExecutions: Match.absent(),
+    });
+  });
+
+  it('may only read uploads/*, write processed/* and consume the uploads queue', () => {
+    const { stateless } = synthTemplates();
+    const { managed, statements } = roleStatements(stateless, workerProps);
+
+    expect(managed).toHaveLength(1);
+    expect(JSON.stringify(managed)).toContain('service-role/AWSLambdaBasicExecutionRole');
+    const actions = statements.map((s) => (Array.isArray(s.Action) ? s.Action.sort() : s.Action));
+    expect(actions).toEqual([
+      's3:GetObject',
+      's3:PutObject',
+      [
+        'sqs:ChangeMessageVisibility',
+        'sqs:DeleteMessage',
+        'sqs:GetQueueAttributes',
+        'sqs:GetQueueUrl',
+        'sqs:ReceiveMessage',
+      ],
+    ]);
+    expect(JSON.stringify(statements[0]?.Resource)).toMatch(/"\/uploads\/\*"\]\]\}$/);
+    expect(JSON.stringify(statements[1]?.Resource)).toMatch(/"\/processed\/\*"\]\]\}$/);
+  });
+
+  it('bundles the linux-arm64 (glibc) build of sharp and no other platform', () => {
+    const { assemblyDir } = synthTemplates();
+    const withSharp = readdirSync(assemblyDir).filter((name) =>
+      existsSync(join(assemblyDir, name, 'node_modules', 'sharp')),
+    );
+    expect(withSharp).toHaveLength(1);
+
+    const platforms = readdirSync(
+      join(assemblyDir, withSharp[0] as string, 'node_modules', '@img'),
+    );
+    expect(platforms).toEqual(
+      expect.arrayContaining(['sharp-linux-arm64', 'sharp-libvips-linux-arm64']),
+    );
+    expect(platforms.filter((name) => /x64|musl|darwin|win32|wasm/.test(name))).toEqual([]);
   });
 });

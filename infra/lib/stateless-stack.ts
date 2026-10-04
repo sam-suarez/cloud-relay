@@ -2,6 +2,7 @@ import { Stack, type StackProps } from 'aws-cdk-lib';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import type { Construct } from 'constructs';
+import { ImageWorker } from './image-worker.ts';
 import type { StatefulStack } from './stateful-stack.ts';
 import { StaticSite } from './static-site.ts';
 import { UploadApi } from './upload-api.ts';
@@ -32,6 +33,14 @@ export class StatelessStack extends Stack {
 
     const uploadApi = new UploadApi(this, 'UploadApi', {
       uploadsBucket: props.stateful.uploadsBucket,
+    });
+
+    // S3 → SQS → this worker → processed bucket. The queue and its S3
+    // notification live in the stateful stack; this stack only consumes it.
+    new ImageWorker(this, 'ImageWorker', {
+      uploadsBucket: props.stateful.uploadsBucket,
+      processedBucket: props.stateful.processedBucket,
+      queue: props.stateful.uploadsQueue,
     });
 
     // Behaviors → /api/* goes to API Gateway instead of S3, so the SPA can call

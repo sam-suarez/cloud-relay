@@ -26,11 +26,20 @@ const contentTypes = Object.keys(UPLOAD_CONTENT_TYPES) as [
   ...UploadContentType[],
 ];
 
+/**
+ * S3 user metadata that tells the worker to fail on purpose, so visitors can
+ * watch SQS retry and then park the message in the dead-letter queue. The
+ * browser sends it as the form field `x-amz-meta-simulate-failure`; the worker
+ * reads it back from GetObject as `Metadata['simulate-failure']`.
+ */
+export const SIMULATE_FAILURE_METADATA = 'simulate-failure';
+
 /** Body of `POST /api/uploads`. The browser describes the file; the server picks the key. */
 export const CreateUploadRequestSchema = z.object({
   contentType: z.enum(contentTypes),
   size: z.number().int().positive().max(MAX_UPLOAD_BYTES),
   sessionId: z.uuid(),
+  simulateFailure: z.boolean().default(false),
 });
 export type CreateUploadRequest = z.infer<typeof CreateUploadRequestSchema>;
 
@@ -55,4 +64,19 @@ export function uploadKey(
   contentType: UploadContentType,
 ): string {
   return `${UPLOADS_PREFIX}${sessionId}/${runId}.${UPLOAD_CONTENT_TYPES[contentType]}`;
+}
+
+const UPLOAD_KEY_PATTERN = new RegExp(
+  `^${UPLOADS_PREFIX}([0-9a-f-]{36})/([0-9a-f-]{36})\\.(${Object.values(UPLOAD_CONTENT_TYPES).join('|')})$`,
+);
+
+/** The reverse of `uploadKey`. Returns null for any key the presign Lambda wouldn't have built. */
+export function parseUploadKey(key: string): { sessionId: string; runId: string } | null {
+  const match = UPLOAD_KEY_PATTERN.exec(key);
+  if (!match) return null;
+  const ids = z.object({ sessionId: z.uuid(), runId: z.uuid() }).safeParse({
+    sessionId: match[1],
+    runId: match[2],
+  });
+  return ids.success ? ids.data : null;
 }

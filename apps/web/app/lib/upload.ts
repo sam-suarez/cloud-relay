@@ -7,6 +7,12 @@ import {
 /** An upload failure with a message that is safe to show the visitor. */
 export class UploadError extends Error {}
 
+export interface UploadOptions {
+  /** Ask the worker to fail on purpose, to watch SQS retry and use the dead-letter queue. */
+  simulateFailure?: boolean;
+  fetchFn?: typeof fetch;
+}
+
 /**
  * Uploads a photo in two requests:
  * 1. `POST /api/uploads` (CloudFront → API Gateway → presign Lambda) returns a presigned POST.
@@ -15,13 +21,14 @@ export class UploadError extends Error {}
 export async function uploadPhoto(
   file: File,
   sessionId: string,
-  fetchFn: typeof fetch = fetch,
+  { simulateFailure = false, fetchFn = fetch }: UploadOptions = {},
 ): Promise<CreateUploadResponse> {
   // Same schema the Lambda uses, so the visitor gets the error before any request.
   const request = CreateUploadRequestSchema.safeParse({
     contentType: file.type,
     size: file.size,
     sessionId,
+    simulateFailure,
   });
   if (!request.success) throw new UploadError('Choose a JPEG, PNG or WebP image up to 5 MB.');
 

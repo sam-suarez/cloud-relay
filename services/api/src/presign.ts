@@ -4,6 +4,7 @@ import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import {
   CreateUploadRequestSchema,
   MAX_UPLOAD_BYTES,
+  SIMULATE_FAILURE_METADATA,
   STEP_SERVICE,
   UPLOAD_URL_TTL_SECONDS,
   uploadKey,
@@ -38,10 +39,13 @@ export async function handler(
   if (!request.success) {
     return json(400, { message: 'Invalid upload request', issues: request.error.issues });
   }
-  const { contentType, sessionId } = request.data;
+  const { contentType, sessionId, simulateFailure } = request.data;
 
   const runId = randomUUID();
   const key = uploadKey(sessionId, runId, contentType);
+  // x-amz-meta-* form fields become S3 user metadata on the object. Every field
+  // is part of the signed policy, so a visitor can't add or flip this flag.
+  const failureField = `x-amz-meta-${SIMULATE_FAILURE_METADATA}`;
 
   const { url, fields } = await createPresignedPost(s3, {
     Bucket: requiredEnv('UPLOADS_BUCKET'),
@@ -51,8 +55,9 @@ export async function handler(
       // whatever size the browser claimed above.
       ['content-length-range', 1, MAX_UPLOAD_BYTES],
       ['eq', '$Content-Type', contentType],
+      ['eq', `$${failureField}`, String(simulateFailure)],
     ],
-    Fields: { 'Content-Type': contentType },
+    Fields: { 'Content-Type': contentType, [failureField]: String(simulateFailure) },
     Expires: UPLOAD_URL_TTL_SECONDS,
   });
   const expiresAt = new Date(started + UPLOAD_URL_TTL_SECONDS * 1000).toISOString();
@@ -70,6 +75,7 @@ export async function handler(
       contentType,
       maxBytes: MAX_UPLOAD_BYTES,
       expiresInSeconds: UPLOAD_URL_TTL_SECONDS,
+      simulateFailure,
     },
     logRef: { logGroup: context.logGroupName, requestId: context.awsRequestId },
   });

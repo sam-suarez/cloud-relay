@@ -74,6 +74,25 @@ describe('presign handler', () => {
     expect(ttl).toBeLessThanOrEqual(61_000);
   });
 
+  it('signs the simulate-failure flag as S3 metadata, false unless asked for', async () => {
+    const normal = (await invoke(request(valid))).json as CreateUploadResponse;
+    expect(normal.fields).toMatchObject({ 'x-amz-meta-simulate-failure': 'false' });
+    expect(decodePolicy(normal.fields).conditions).toContainEqual([
+      'eq',
+      '$x-amz-meta-simulate-failure',
+      'false',
+    ]);
+
+    const failing = (await invoke(request({ ...valid, simulateFailure: true })))
+      .json as CreateUploadResponse;
+    expect(failing.fields).toMatchObject({ 'x-amz-meta-simulate-failure': 'true' });
+    expect(decodePolicy(failing.fields).conditions).toContainEqual([
+      'eq',
+      '$x-amz-meta-simulate-failure',
+      'true',
+    ]);
+  });
+
   it('gives every request a new runId', async () => {
     const a = (await invoke(request(valid))).json as CreateUploadResponse;
     const b = (await invoke(request(valid))).json as CreateUploadResponse;

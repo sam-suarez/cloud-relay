@@ -3,6 +3,7 @@ import {
   CreateUploadRequestSchema,
   CreateUploadResponseSchema,
   MAX_UPLOAD_BYTES,
+  parseUploadKey,
   uploadKey,
 } from './uploads.ts';
 
@@ -21,7 +22,15 @@ describe('CreateUploadRequestSchema', () => {
     );
   });
 
+  it('defaults simulateFailure to false', () => {
+    expect(CreateUploadRequestSchema.parse(valid).simulateFailure).toBe(false);
+    expect(
+      CreateUploadRequestSchema.parse({ ...valid, simulateFailure: true }).simulateFailure,
+    ).toBe(true);
+  });
+
   it.each([
+    ['a non-boolean simulateFailure', { simulateFailure: 'yes' }],
     ['another content type', { contentType: 'image/gif' }],
     ['a file over 5 MB', { size: MAX_UPLOAD_BYTES + 1 }],
     ['an empty file', { size: 0 }],
@@ -49,5 +58,20 @@ describe('uploadKey', () => {
   it('builds uploads/{sessionId}/{runId}.{ext} from the content type', () => {
     expect(uploadKey(sessionId, runId, 'image/jpeg')).toBe(`uploads/${sessionId}/${runId}.jpg`);
     expect(uploadKey(sessionId, runId, 'image/webp')).toBe(`uploads/${sessionId}/${runId}.webp`);
+  });
+});
+
+describe('parseUploadKey', () => {
+  it('reads the session and run back out of a key built by uploadKey', () => {
+    expect(parseUploadKey(uploadKey(sessionId, runId, 'image/png'))).toEqual({ sessionId, runId });
+  });
+
+  it.each([
+    ['another prefix', `processed/${sessionId}/${runId}.jpg`],
+    ['an unknown extension', `uploads/${sessionId}/${runId}.gif`],
+    ['an extra path segment', `uploads/${sessionId}/x/${runId}.jpg`],
+    ['IDs that are not UUIDs', `uploads/${'z'.repeat(36)}/${runId}.jpg`],
+  ])('rejects %s', (_label, key) => {
+    expect(parseUploadKey(key)).toBeNull();
   });
 });

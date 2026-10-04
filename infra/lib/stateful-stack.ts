@@ -1,11 +1,15 @@
 import { Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import { UPLOADS_PREFIX } from '@cloud-relay/shared';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { PROCESSED_PREFIX, UPLOADS_PREFIX, WORKER_MAX_ATTEMPTS } from '@cloud-relay/shared';
 import type { Construct } from 'constructs';
+import { WORKER_TIMEOUT } from './config.ts';
 
 /**
- * Resources that hold data: S3 buckets, DynamoDB tables, the Aurora cluster,
- * the Cognito user pool.
+ * Resources that hold data: S3 buckets, SQS queues, DynamoDB tables, the Aurora
+ * cluster, the Cognito user pool.
  *
  * Kept separate so the stateless stack can be destroyed and redeployed freely
  * without any risk of replacing (and emptying) a bucket or table. Changes here
@@ -16,6 +20,12 @@ export class StatefulStack extends Stack {
   readonly siteBucket: s3.Bucket;
   /** Private bucket that browsers upload originals to with a presigned POST. */
   readonly uploadsBucket: s3.Bucket;
+  /** Private bucket for the worker's resized images. */
+  readonly processedBucket: s3.Bucket;
+  /** Receives an S3 notification for every new upload; the worker consumes it. */
+  readonly uploadsQueue: sqs.Queue;
+  /** Where SQS moves upload messages that failed WORKER_MAX_ATTEMPTS times. */
+  readonly uploadsDeadLetterQueue: sqs.Queue;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -58,5 +68,73 @@ export class StatefulStack extends Stack {
       ],
       removalPolicy: RemovalPolicy.RETAIN,
     });
+
+    // Same settings as the uploads bucket, minus CORS: browsers never write here.
+    this.processedBucket = new s3.Bucket(this, 'ProcessedBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      lifecycleRules: [
+        { id: 'expire-processed', prefix: PROCESSED_PREFIX, expiration: Duration.days(1) },
+      ],
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // The "parking lot" for messages the worker couldn't process. Nothing consumes
+    // it: you inspect it in the console and can redrive messages back later.
+    // Retention counts from when the message first entered the source queue, so
+    // it must be longer than the source queue's 1 day.
+    //
+    // No redrive allow policy (which source queues may use this DLQ): it would
+    // have to name the source queue, whose redrive policy already names this
+    // queue, and CloudFormation can't create two resources that reference each
+    // other. The default allows queues in this account only.
+    this.uploadsDeadLetterQueue = new sqs.Queue(this, 'UploadsDeadLetterQueue', {
+      retentionPeriod: Duration.days(4),
+      encryption: sqs.QueueEncryption.SQS_MANAGED, // SSE-SQS, free
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.DESTROY, // messages expire anyway
+    });
+
+    // Same settings as the throwaway queue, at production values.
+    this.uploadsQueue = new sqs.Queue(this, 'UploadsQueue', {
+      // The lease: how long a received message stays hidden. Lambda refuses an
+      // event source mapping whose function timeout is longer than this.
+      visibilityTimeout: Duration.seconds(WORKER_TIMEOUT.toSeconds() * 6),
+      retentionPeriod: Duration.days(1),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      // Redrive policy: after this many receives without a delete, move to the DLQ.
+      deadLetterQueue: { queue: this.uploadsDeadLetterQueue, maxReceiveCount: WORKER_MAX_ATTEMPTS },
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    // Properties → Event notifications: every object created under uploads/
+    // sends a message to the queue. CDK also adds the queue policy that lets the
+    // S3 service send to it for this bucket only (aws:SourceArn), like the one
+    // you wrote in walkthrough 2.
+    //
+    // CloudFormation's own notification setting can't express this ordering
+    // (S3 checks the queue policy at save time), so CDK manages it with a small
+    // custom-resource Lambda that only runs during deploys.
+    this.uploadsBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.SqsDestination(this.uploadsQueue),
+      { prefix: UPLOADS_PREFIX },
+    );
+    // CDK's statement only checks the bucket ARN. Bucket names are global, so if
+    // this bucket were ever deleted, another account could create one with the
+    // same name. Pin the account too, as in walkthrough 2 ("confused deputy").
+    this.uploadsQueue.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyS3FromOtherAccounts',
+        effect: iam.Effect.DENY,
+        principals: [new iam.ServicePrincipal('s3.amazonaws.com')],
+        actions: ['sqs:SendMessage'],
+        resources: [this.uploadsQueue.queueArn],
+        conditions: { StringNotEquals: { 'aws:SourceAccount': this.account } },
+      }),
+    );
   }
 }

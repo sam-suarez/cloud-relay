@@ -1,4 +1,4 @@
-import { MAX_UPLOAD_BYTES, UPLOAD_CONTENT_TYPES } from '@cloud-relay/shared';
+import { MAX_UPLOAD_BYTES, UPLOAD_CONTENT_TYPES, WORKER_MAX_ATTEMPTS } from '@cloud-relay/shared';
 import { useState } from 'react';
 import { UploadError, uploadPhoto } from '../lib/upload.ts';
 
@@ -6,7 +6,7 @@ interface Props {
   sessionId: string;
   busy: boolean;
   /** Called after S3 accepted the file, with the runId the presign Lambda assigned. */
-  onUploaded: (runId: string) => void;
+  onUploaded: (runId: string, options: { simulateFailure: boolean }) => void;
   onSimulate: (options: { fail: boolean }) => void;
 }
 
@@ -21,14 +21,15 @@ const ACCEPT = Object.keys(UPLOAD_CONTENT_TYPES).join(',');
 /** Real upload through the API (presigned POST to S3), plus scripted runs on the mock stream. */
 export function UploadPanel({ sessionId, busy, onUploaded, onSimulate }: Props) {
   const [state, setState] = useState<UploadState>({ status: 'idle' });
+  const [simulateFailure, setSimulateFailure] = useState(false);
   const disabled = busy || state.status === 'uploading';
 
   async function upload(file: File) {
     setState({ status: 'uploading' });
     try {
-      const { key, runId } = await uploadPhoto(file, sessionId);
+      const { key, runId } = await uploadPhoto(file, sessionId, { simulateFailure });
       setState({ status: 'done', key });
-      onUploaded(runId);
+      onUploaded(runId, { simulateFailure });
     } catch (error) {
       const message =
         error instanceof UploadError ? error.message : 'Upload failed. Check your connection.';
@@ -61,6 +62,19 @@ export function UploadPanel({ sessionId, busy, onUploaded, onSimulate }: Props) 
       <p className="text-xs text-slate-400">
         JPEG, PNG or WebP up to {MAX_UPLOAD_BYTES / 1024 / 1024} MB. Deleted after a day.
       </p>
+      <label className="flex items-start gap-2 text-xs text-slate-300">
+        <input
+          type="checkbox"
+          checked={simulateFailure}
+          disabled={disabled}
+          onChange={(e) => setSimulateFailure(e.currentTarget.checked)}
+          className="mt-0.5 accent-rose-500"
+        />
+        <span>
+          Make the worker fail: SQS retries it {WORKER_MAX_ATTEMPTS} times, then moves it to the
+          dead-letter queue.
+        </span>
+      </label>
 
       {state.status === 'done' && (
         <p className="text-xs text-emerald-300">

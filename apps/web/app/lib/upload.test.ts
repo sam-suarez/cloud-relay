@@ -23,7 +23,7 @@ describe('uploadPhoto', () => {
   it('asks the API for a presigned POST, then posts the fields and file to S3', async () => {
     const fetchFn = fakeFetch(Response.json(presigned));
 
-    await expect(uploadPhoto(photo(), sessionId, fetchFn)).resolves.toEqual(presigned);
+    await expect(uploadPhoto(photo(), sessionId, { fetchFn })).resolves.toEqual(presigned);
 
     const [apiUrl, apiInit] = fetchFn.mock.calls[0] ?? [];
     expect(apiUrl).toBe('/api/uploads');
@@ -32,6 +32,7 @@ describe('uploadPhoto', () => {
       contentType: 'image/jpeg',
       size: 1024,
       sessionId,
+      simulateFailure: false,
     });
 
     const [s3Url, s3Init] = fetchFn.mock.calls[1] ?? [];
@@ -40,25 +41,34 @@ describe('uploadPhoto', () => {
     expect([...form.keys()]).toEqual(['key', 'Content-Type', 'Policy', 'file']);
   });
 
+  it('asks for a simulated worker failure when requested', async () => {
+    const fetchFn = fakeFetch(Response.json(presigned));
+
+    await uploadPhoto(photo(), sessionId, { simulateFailure: true, fetchFn });
+
+    const [, apiInit] = fetchFn.mock.calls[0] ?? [];
+    expect(JSON.parse(apiInit?.body as string)).toMatchObject({ simulateFailure: true });
+  });
+
   it('rejects an unsupported file before calling the API', async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const gif = new File(['x'], 'cat.gif', { type: 'image/gif' });
 
-    await expect(uploadPhoto(gif, sessionId, fetchFn)).rejects.toThrow(/JPEG, PNG or WebP/);
+    await expect(uploadPhoto(gif, sessionId, { fetchFn })).rejects.toThrow(/JPEG, PNG or WebP/);
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it('explains API Gateway throttling (429)', async () => {
     const fetchFn = fakeFetch(new Response('{"message":"Too Many Requests"}', { status: 429 }));
 
-    await expect(uploadPhoto(photo(), sessionId, fetchFn)).rejects.toThrow(/throttling/);
+    await expect(uploadPhoto(photo(), sessionId, { fetchFn })).rejects.toThrow(/throttling/);
   });
 
   it('surfaces the S3 error code', async () => {
     const s3Error = new Response('<Error><Code>AccessDenied</Code></Error>', { status: 403 });
     const fetchFn = fakeFetch(Response.json(presigned), s3Error);
 
-    const error = await uploadPhoto(photo(), sessionId, fetchFn).catch((e: unknown) => e);
+    const error = await uploadPhoto(photo(), sessionId, { fetchFn }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(UploadError);
     expect((error as Error).message).toBe('S3 rejected the upload: AccessDenied.');
   });
