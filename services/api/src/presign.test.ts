@@ -93,10 +93,11 @@ describe('presign handler', () => {
     ]);
   });
 
-  it('gives every request a new runId', async () => {
+  it('gives every request a new, time-ordered (UUIDv7) runId', async () => {
     const a = (await invoke(request(valid))).json as CreateUploadResponse;
     const b = (await invoke(request(valid))).json as CreateUploadResponse;
     expect(a.runId).not.toBe(b.runId);
+    expect(a.runId[14]).toBe('7'); // the UUID version digit
   });
 
   it('emits a valid presign step event for the run', async () => {

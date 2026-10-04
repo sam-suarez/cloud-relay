@@ -60,7 +60,8 @@ export function UploadPanel({ sessionId, busy, onUploaded, onSimulate }: Props) 
         />
       </label>
       <p className="text-xs text-slate-400">
-        JPEG, PNG or WebP up to {MAX_UPLOAD_BYTES / 1024 / 1024} MB. Deleted after a day.
+        JPEG, PNG or WebP up to {MAX_UPLOAD_BYTES / 1024 / 1024} MB. Deleted after a day. Photos are
+        analyzed by Amazon Rekognition, and AWS may keep them to improve its AI services.
       </p>
       <label className="flex items-start gap-2 text-xs text-slate-300">
         <input

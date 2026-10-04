@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { S3Client } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import {
@@ -8,6 +7,7 @@ import {
   STEP_SERVICE,
   UPLOAD_URL_TTL_SECONDS,
   uploadKey,
+  uuidv7,
   type CreateUploadResponse,
 } from '@cloud-relay/shared';
 import type {
@@ -41,7 +41,8 @@ export async function handler(
   }
   const { contentType, sessionId, simulateFailure } = request.data;
 
-  const runId = randomUUID();
+  // Time-ordered, so the Images table's sort key lists a session's uploads in order.
+  const runId = uuidv7();
   const key = uploadKey(sessionId, runId, contentType);
   // x-amz-meta-* form fields become S3 user metadata on the object. Every field
   // is part of the signed policy, so a visitor can't add or flip this flag.

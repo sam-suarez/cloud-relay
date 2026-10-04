@@ -35,12 +35,14 @@ export class StatelessStack extends Stack {
       uploadsBucket: props.stateful.uploadsBucket,
     });
 
-    // S3 → SQS → this worker → processed bucket. The queue and its S3
-    // notification live in the stateful stack; this stack only consumes it.
+    // S3 → SQS → this worker → processed bucket, Rekognition, DynamoDB. The
+    // queue, buckets and tables live in the stateful stack; this stack only uses them.
     new ImageWorker(this, 'ImageWorker', {
       uploadsBucket: props.stateful.uploadsBucket,
       processedBucket: props.stateful.processedBucket,
       queue: props.stateful.uploadsQueue,
+      imagesTable: props.stateful.imagesTable,
+      usageTable: props.stateful.usageTable,
     });
 
     // Behaviors → /api/* goes to API Gateway instead of S3, so the SPA can call

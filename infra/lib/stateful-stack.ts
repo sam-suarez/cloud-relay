@@ -1,9 +1,15 @@
 import { Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
-import { PROCESSED_PREFIX, UPLOADS_PREFIX, WORKER_MAX_ATTEMPTS } from '@cloud-relay/shared';
+import {
+  PROCESSED_PREFIX,
+  UPLOADS_PREFIX,
+  WORKER_MAX_ATTEMPTS,
+  type ImageRecord,
+} from '@cloud-relay/shared';
 import type { Construct } from 'constructs';
 import { WORKER_TIMEOUT } from './config.ts';
 
@@ -26,6 +32,10 @@ export class StatefulStack extends Stack {
   readonly uploadsQueue: sqs.Queue;
   /** Where SQS moves upload messages that failed WORKER_MAX_ATTEMPTS times. */
   readonly uploadsDeadLetterQueue: sqs.Queue;
+  /** One item per processed upload, listed per session. */
+  readonly imagesTable: dynamodb.Table;
+  /** One counter per UTC day, for the daily Rekognition limit. */
+  readonly usageTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -136,5 +146,34 @@ export class StatefulStack extends Stack {
         conditions: { StringNotEquals: { 'aws:SourceAccount': this.account } },
       }),
     );
+
+    // Same table as the Phase 5 DynamoDB walkthrough. Only the key attributes are declared; every
+    // other attribute (see ImageRecord) is schemaless and set per item.
+    // Access patterns: Query by sessionId for a session's gallery (run IDs are
+    // UUIDv7s, so the sort key orders them by upload time), GetItem for one run.
+    this.imagesTable = new dynamodb.Table(this, 'ImagesTable', {
+      partitionKey: {
+        name: 'sessionId' satisfies keyof ImageRecord,
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: { name: 'runId' satisfies keyof ImageRecord, type: dynamodb.AttributeType.STRING },
+      // On-demand: billed per request, nothing when idle, no capacity to plan.
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      // Additional settings → Time to Live. DynamoDB deletes each item a while
+      // after its expiresAt (Unix seconds), for free.
+      timeToLiveAttribute: 'expiresAt' satisfies keyof ImageRecord,
+      // Records expire after a day, so there is nothing worth keeping (or
+      // backing up with point-in-time recovery, which stays off).
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    // Its own small table rather than special items in the Images table: a
+    // different key (the day), and the worker may only update counters here.
+    this.usageTable = new dynamodb.Table(this, 'UsageTable', {
+      partitionKey: { name: 'day', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
   }
 }

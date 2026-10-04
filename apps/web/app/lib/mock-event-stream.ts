@@ -7,6 +7,7 @@ import {
   type Step,
   type StepDetail,
   type StepEvent,
+  uuidv7,
 } from '@cloud-relay/shared';
 import type { EventStream, StepEventListener } from './event-stream.ts';
 
@@ -40,11 +41,25 @@ const MOCK_STEPS: Record<Step, { durationMs: number; detail: StepDetail }> = {
       display: '1280×960',
       thumb: '320×240',
       outputBytes: 96_412,
+      rekognitionJpegBytes: 148_230,
     },
   },
-  moderate: { durationMs: 430, detail: { flagged: false, minConfidence: 80 } },
-  label: { durationMs: 610, detail: { labels: 'Dog, Pet, Grass', count: 3 } },
-  persist: { durationMs: 22, detail: { table: 'images', consumedWcu: 1 } },
+  moderate: {
+    durationMs: 430,
+    detail: {
+      flagged: false,
+      blocked: 'none',
+      found: 'nothing',
+      minConfidence: 60,
+      model: '7.0',
+      analysesToday: '12 of 200',
+    },
+  },
+  label: {
+    durationMs: 610,
+    detail: { labels: 'Dog, Pet, Grass', count: 3, minConfidence: 75, model: '3.0' },
+  },
+  persist: { durationMs: 22, detail: { table: 'ImagesTable', status: 'ready', consumedWcu: 1 } },
   notify: { durationMs: 35, detail: { connections: 1 } },
 };
 
@@ -84,7 +99,7 @@ export function createMockEventStream(): MockEventStream {
       listeners.clear();
     },
 
-    startRun({ sessionId, runId = crypto.randomUUID(), failAt }) {
+    startRun({ sessionId, runId = uuidv7(), failAt }) {
       const t0 = Date.now();
       let offset = 0;
 

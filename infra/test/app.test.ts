@@ -417,6 +417,8 @@ describe('async pipeline: worker', () => {
         Variables: Match.objectLike({
           PROCESSED_BUCKET: Match.anyValue(),
           QUEUE_URL: Match.anyValue(),
+          IMAGES_TABLE: Match.anyValue(),
+          USAGE_TABLE: Match.anyValue(),
         }),
       },
       LoggingConfig: { LogGroup: Match.anyValue() },
@@ -439,7 +441,7 @@ describe('async pipeline: worker', () => {
     });
   });
 
-  it('may only read uploads/*, write processed/* and consume the uploads queue', () => {
+  it('may only use its objects, the two Rekognition calls, one action per table and the queue', () => {
     const { stateless } = synthTemplates();
     const { managed, statements } = roleStatements(stateless, workerProps);
 
@@ -447,8 +449,11 @@ describe('async pipeline: worker', () => {
     expect(JSON.stringify(managed)).toContain('service-role/AWSLambdaBasicExecutionRole');
     const actions = statements.map((s) => (Array.isArray(s.Action) ? s.Action.sort() : s.Action));
     expect(actions).toEqual([
-      's3:GetObject',
-      's3:PutObject',
+      ['s3:DeleteObject', 's3:GetObject'],
+      ['s3:DeleteObject', 's3:PutObject'],
+      ['rekognition:DetectLabels', 'rekognition:DetectModerationLabels'],
+      'dynamodb:PutItem',
+      'dynamodb:UpdateItem',
       [
         'sqs:ChangeMessageVisibility',
         'sqs:DeleteMessage',
@@ -457,8 +462,13 @@ describe('async pipeline: worker', () => {
         'sqs:ReceiveMessage',
       ],
     ]);
-    expect(JSON.stringify(statements[0]?.Resource)).toMatch(/"\/uploads\/\*"\]\]\}$/);
-    expect(JSON.stringify(statements[1]?.Resource)).toMatch(/"\/processed\/\*"\]\]\}$/);
+    const resources = statements.map((s) => JSON.stringify(s.Resource));
+    expect(resources[0]).toMatch(/"\/uploads\/\*"\]\]\}$/);
+    expect(resources[1]).toMatch(/"\/processed\/\*"\]\]\}$/);
+    // Detect* can't be scoped to a resource; nothing else may use "*".
+    expect(resources.filter((r) => r === '"*"')).toEqual([resources[2]]);
+    expect(resources[3]).toMatch(/ImagesTable/);
+    expect(resources[4]).toMatch(/UsageTable/);
   });
 
   it('bundles the linux-arm64 (glibc) build of sharp and no other platform', () => {
@@ -475,5 +485,44 @@ describe('async pipeline: worker', () => {
       expect.arrayContaining(['sharp-linux-arm64', 'sharp-libvips-linux-arm64']),
     );
     expect(platforms.filter((name) => /x64|musl|darwin|win32|wasm/.test(name))).toEqual([]);
+  });
+});
+
+describe('image records', () => {
+  it('keys images by session and run, on demand, with TTL on expiresAt', () => {
+    const { stateful } = synthTemplates();
+
+    stateful.hasResource('AWS::DynamoDB::Table', {
+      Properties: {
+        KeySchema: [
+          { AttributeName: 'sessionId', KeyType: 'HASH' },
+          { AttributeName: 'runId', KeyType: 'RANGE' },
+        ],
+        AttributeDefinitions: [
+          { AttributeName: 'sessionId', AttributeType: 'S' },
+          { AttributeName: 'runId', AttributeType: 'S' },
+        ],
+        BillingMode: 'PAY_PER_REQUEST',
+        TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+        GlobalSecondaryIndexes: Match.absent(),
+        PointInTimeRecoverySpecification: Match.absent(),
+      },
+      // The data expires within a day anyway.
+      DeletionPolicy: 'Delete',
+    });
+  });
+
+  it('keeps one usage counter per day, with TTL', () => {
+    const { stateful } = synthTemplates();
+
+    stateful.resourceCountIs('AWS::DynamoDB::Table', 2);
+    stateful.hasResource('AWS::DynamoDB::Table', {
+      Properties: {
+        KeySchema: [{ AttributeName: 'day', KeyType: 'HASH' }],
+        BillingMode: 'PAY_PER_REQUEST',
+        TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+      },
+      DeletionPolicy: 'Delete',
+    });
   });
 });
