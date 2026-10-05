@@ -13,6 +13,7 @@ import {
   SIMULATE_FAILURE_METADATA,
   STEP_SERVICE,
   WORKER_MAX_ATTEMPTS,
+  describeRejection,
   imageExpiresAt,
   parseUploadKey,
   processedKey,
@@ -170,7 +171,7 @@ async function processUpload(upload: UploadedObject, record: SQSRecord, context:
         s3.send(
           new PutObjectCommand({
             Bucket: requiredEnv('PROCESSED_BUCKET'),
-            Key: processedKey(ids.sessionId, ids.runId, image.variant),
+            Key: processedKey(ids.runId, image.variant),
             Body: image.body,
             ContentType: 'image/webp',
             // Each run writes new keys, so the files never change once written.
@@ -183,7 +184,7 @@ async function processUpload(upload: UploadedObject, record: SQSRecord, context:
     const files = Object.fromEntries(
       variants.map(({ variant, width, height, bytes }) => [
         variant,
-        { key: processedKey(ids.sessionId, ids.runId, variant), width, height, bytes },
+        { key: processedKey(ids.runId, variant), width, height, bytes },
       ]),
     ) as Record<ImageVariant, ImageFile>;
 
@@ -306,19 +307,13 @@ async function reject(
 
   const processed = (Object.keys(IMAGE_VARIANTS) as ImageVariant[]).map((variant) => ({
     Bucket: requiredEnv('PROCESSED_BUCKET'),
-    Key: processedKey(run.sessionId, run.runId, variant),
+    Key: processedKey(run.runId, variant),
   }));
   await Promise.all(
     [{ Bucket: upload.bucket, Key: upload.key }, ...processed].map((object) =>
       s3.send(new DeleteObjectCommand(object)),
     ),
   );
-}
-
-function describeRejection(rejection: Rejection): string {
-  return rejection.reason === 'moderation'
-    ? `moderation: ${rejection.categories.join(', ')}`
-    : `daily analysis limit reached (${DAILY_ANALYSIS_LIMIT} images)`;
 }
 
 /**

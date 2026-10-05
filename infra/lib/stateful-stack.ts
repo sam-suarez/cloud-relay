@@ -87,7 +87,9 @@ export class StatefulStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
+      // No enforceSSL here: CloudFront reads this bucket, and its bucket policy
+      // (OAC read access + HTTPS only) must name the distribution, so it lives
+      // in the stateless stack, like the site bucket's. See ProcessedImages.
       lifecycleRules: [
         { id: 'expire-processed', prefix: PROCESSED_PREFIX, expiration: Duration.days(1) },
       ],

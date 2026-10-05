@@ -107,7 +107,8 @@ describe('static site', () => {
   it('lets only this distribution read the bucket, over HTTPS', () => {
     const { stateless } = synthTemplates();
 
-    stateless.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+    // One per S3 origin: the site and the processed images.
+    stateless.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2);
     stateless.hasResourceProperties('AWS::S3::BucketPolicy', {
       PolicyDocument: {
         Statement: Match.arrayWith([
@@ -335,6 +336,20 @@ describe('async pipeline: buckets and queues', () => {
       },
       DeletionPolicy: 'Retain',
     });
+  });
+
+  it("keeps the processed bucket's policy out of the stateful stack", () => {
+    const { stateful } = synthTemplates();
+    const processed = logicalId(stateful, 'AWS::S3::Bucket', {
+      LifecycleConfiguration: { Rules: [Match.objectLike({ Id: 'expire-processed' })] },
+    });
+
+    // It names the distribution, so it lives in the stateless stack (see below).
+    expect(
+      stateful.findResources('AWS::S3::BucketPolicy', {
+        Properties: { Bucket: { Ref: processed } },
+      }),
+    ).toEqual({});
   });
 
   it('gives the uploads queue a 60 s lease (6 × the worker timeout), 1-day retention and a DLQ after 5 receives', () => {
@@ -637,6 +652,125 @@ describe('real time: WebSocket API', () => {
             CachePolicyId: cloudfront.CachePolicy.CACHING_DISABLED.cachePolicyId,
             OriginRequestPolicyId:
               cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER.originRequestPolicyId,
+            FunctionAssociations: Match.absent(),
+          }),
+        ]),
+      }),
+    });
+  });
+});
+
+describe('gallery: read API', () => {
+  const galleryProps = { Description: Match.stringLikeRegexp('newest images') };
+
+  it('runs the gallery Lambda on Node 24, arm64, 256 MB, 3 s, with 1-week logs', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::Lambda::Function', {
+      ...galleryProps,
+      Runtime: 'nodejs24.x',
+      Architectures: ['arm64'],
+      MemorySize: 256,
+      Timeout: 3,
+      Environment: { Variables: { IMAGES_TABLE: Match.anyValue() } },
+      LoggingConfig: { LogGroup: Match.anyValue() },
+    });
+  });
+
+  it('may only Query the Images table, plus basic logging', () => {
+    const { stateless } = synthTemplates();
+    const { managed, statements } = roleStatements(stateless, galleryProps);
+
+    expect(managed).toHaveLength(1);
+    expect(JSON.stringify(managed)).toContain('service-role/AWSLambdaBasicExecutionRole');
+    expect(statements.map((s) => s.Action)).toEqual(['dynamodb:Query']);
+    expect(JSON.stringify(statements[0]?.Resource)).toMatch(/ImagesTable/);
+  });
+
+  it('adds GET /api/sessions/{sessionId}/images to the HTTP API, under the stage default throttle', () => {
+    const { stateless } = synthTemplates();
+    const api = logicalId(stateless, 'AWS::ApiGatewayV2::Api', { ProtocolType: 'HTTP' });
+    const routes = stateless.findResources('AWS::ApiGatewayV2::Route', {
+      Properties: { ApiId: { Ref: api } },
+    });
+
+    expect(Object.values(routes).map((r) => r.Properties.RouteKey)).toEqual(
+      expect.arrayContaining(['POST /api/uploads', 'GET /api/sessions/{sessionId}/images']),
+    );
+    // No per-route override: the default (1/s, burst 5) applies to each route.
+    stateless.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
+      ApiId: { Ref: api },
+      DefaultRouteSettings: { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 5 },
+      RouteSettings: Match.absent(),
+    });
+  });
+});
+
+describe('gallery: processed images through CloudFront', () => {
+  /** The stateless bucket policy that grants read access under processed/. */
+  function processedBucketPolicy(template: Template) {
+    const policies = Object.values(template.findResources('AWS::S3::BucketPolicy')).filter((p) =>
+      JSON.stringify(p).includes('/processed/*'),
+    );
+    expect(policies).toHaveLength(1);
+    return policies[0]!.Properties.PolicyDocument.Statement as Record<string, unknown>[];
+  }
+
+  it('lets only this distribution read processed/*, over HTTPS', () => {
+    const { stateless } = synthTemplates();
+    const statements = processedBucketPolicy(stateless);
+
+    expect(statements).toEqual([
+      expect.objectContaining({
+        Sid: 'AllowCloudFrontRead',
+        Effect: 'Allow',
+        Principal: { Service: 'cloudfront.amazonaws.com' },
+        Action: 's3:GetObject', // no s3:ListBucket: unknown keys get 403
+        Condition: { StringEquals: { 'AWS:SourceArn': expect.anything() } },
+      }),
+      expect.objectContaining({
+        Sid: 'DenyInsecureTransport',
+        Effect: 'Deny',
+        Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+      }),
+    ]);
+    expect(JSON.stringify(statements[0]?.Resource)).toMatch(/"\/processed\/\*"\]\]\}$/);
+  });
+
+  it('caches images by path only, for at most an hour, uncompressed', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::CloudFront::CachePolicy', {
+      CachePolicyConfig: {
+        MinTTL: 0,
+        DefaultTTL: 3600,
+        MaxTTL: 3600,
+        ParametersInCacheKeyAndForwardedToOrigin: {
+          HeadersConfig: { HeaderBehavior: 'none' },
+          CookiesConfig: { CookieBehavior: 'none' },
+          QueryStringsConfig: { QueryStringBehavior: 'none' },
+          EnableAcceptEncodingGzip: false,
+          EnableAcceptEncodingBrotli: false,
+        },
+      },
+    });
+  });
+
+  it('serves /processed/* from the processed bucket with that cache policy and no SPA rewrite', () => {
+    const { stateless } = synthTemplates();
+    const cachePolicy = logicalId(stateless, 'AWS::CloudFront::CachePolicy', {
+      CachePolicyConfig: Match.objectLike({ MaxTTL: 3600 }),
+    });
+
+    stateless.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        CacheBehaviors: Match.arrayWith([
+          Match.objectLike({
+            PathPattern: '/processed/*',
+            AllowedMethods: Match.absent(), // CloudFormation's default: GET and HEAD only
+            ViewerProtocolPolicy: 'redirect-to-https',
+            CachePolicyId: { Ref: cachePolicy },
+            Compress: false,
             FunctionAssociations: Match.absent(),
           }),
         ]),

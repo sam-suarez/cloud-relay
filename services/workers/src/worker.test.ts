@@ -156,8 +156,8 @@ describe('worker handler', () => {
       .map(([command]) => command)
       .filter((command): command is PutObjectCommand => command instanceof PutObjectCommand);
     expect(puts.map((put) => put.input.Key).sort()).toEqual([
-      `processed/${sessionId}/${runId}/display.webp`,
-      `processed/${sessionId}/${runId}/thumb.webp`,
+      `processed/${runId}/display.webp`,
+      `processed/${runId}/thumb.webp`,
     ]);
     for (const put of puts) {
       expect(put.input).toMatchObject({
@@ -265,13 +265,13 @@ describe('worker handler', () => {
       expiresAt: Date.UTC(2026, 9, 4, 17, 52, 52) / 1000,
       originalBytes: 2048,
       display: {
-        key: `processed/${sessionId}/${runId}/display.webp`,
+        key: `processed/${runId}/display.webp`,
         width: 1280,
         height: 960,
         bytes: expect.any(Number),
       },
       thumb: {
-        key: `processed/${sessionId}/${runId}/thumb.webp`,
+        key: `processed/${runId}/thumb.webp`,
         width: 320,
         height: 240,
         bytes: expect.any(Number),
@@ -311,8 +311,8 @@ describe('worker handler', () => {
     });
     expect(sent(s3Send, DeleteObjectCommand).map((d) => d.input)).toEqual([
       { Bucket: 'uploads-bucket', Key: key },
-      { Bucket: 'test-processed-bucket', Key: `processed/${sessionId}/${runId}/display.webp` },
-      { Bucket: 'test-processed-bucket', Key: `processed/${sessionId}/${runId}/thumb.webp` },
+      { Bucket: 'test-processed-bucket', Key: `processed/${runId}/display.webp` },
+      { Bucket: 'test-processed-bucket', Key: `processed/${runId}/thumb.webp` },
     ]);
     expect(emitted().map((e) => `${e.step}:${e.status}`)).not.toContain('label:started');
     expect(emitted().at(-1)).toMatchObject({ step: 'notify', status: 'succeeded' });

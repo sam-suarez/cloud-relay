@@ -6,6 +6,7 @@ const BAR_COLORS = {
   started: 'bg-amber-400/80 animate-pulse',
   succeeded: 'bg-emerald-500',
   failed: 'bg-rose-500',
+  missed: 'bg-slate-500',
 } as const;
 
 /** A waterfall of every step in the current run, like the browser's Network tab. */

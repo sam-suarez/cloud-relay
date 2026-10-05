@@ -3,7 +3,9 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { WEBSOCKET_PATH } from '@cloud-relay/shared';
 import type { Construct } from 'constructs';
+import { GalleryApi } from './gallery-api.ts';
 import { ImageWorker } from './image-worker.ts';
+import { ProcessedImages } from './processed-images.ts';
 import { RealtimeApi } from './realtime-api.ts';
 import type { StatefulStack } from './stateful-stack.ts';
 import { StaticSite } from './static-site.ts';
@@ -47,6 +49,13 @@ export class StatelessStack extends Stack {
       usageTable: props.stateful.usageTable,
     });
 
+    // GET /api/sessions/{sessionId}/images on the same HTTP API: the session's
+    // gallery, read back from the Images table.
+    new GalleryApi(this, 'GalleryApi', {
+      httpApi: uploadApi.httpApi,
+      imagesTable: props.stateful.imagesTable,
+    });
+
     // The WebSocket API, and permission for both pipeline Lambdas to push step
     // events through it.
     const realtime = new RealtimeApi(this, 'Realtime', {
@@ -66,7 +75,7 @@ export class StatelessStack extends Stack {
       }),
       {
         // CloudFront offers three method sets; POST is only in "all methods".
-        // API Gateway answers 404 for anything but the POST route.
+        // API Gateway answers 404 for any method and path without a route.
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         // Redirecting a POST would drop its body, so plain HTTP is refused instead.
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
@@ -97,5 +106,12 @@ export class StatelessStack extends Stack {
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
       },
     );
+
+    // Behaviors → /processed/* goes to the processed bucket (OAC), so gallery
+    // images load from the site's own domain.
+    new ProcessedImages(this, 'ProcessedImages', {
+      distribution: site.distribution,
+      bucket: props.stateful.processedBucket,
+    });
   }
 }

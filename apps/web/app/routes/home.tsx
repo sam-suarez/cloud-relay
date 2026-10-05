@@ -1,13 +1,15 @@
-import { useReducer, useState } from 'react';
+import { useMemo, useReducer, useState } from 'react';
 import { ArchitectureDiagram } from '../components/ArchitectureDiagram.tsx';
+import { Gallery } from '../components/Gallery.tsx';
 import { NodeDetailPanel } from '../components/NodeDetailPanel.tsx';
 import { RunResult } from '../components/RunResult.tsx';
 import { TimelineView } from '../components/TimelineView.tsx';
 import { UploadPanel } from '../components/UploadPanel.tsx';
 import type { NodeId } from '../lib/pipeline.ts';
-import { applyEvent, runStatus } from '../lib/run-state.ts';
+import { applyEvent, runStatus, settle } from '../lib/run-state.ts';
 import { getSessionId } from '../lib/session.ts';
 import { useEventStream, type EventSource } from '../lib/use-event-stream.ts';
+import { useGallery } from '../lib/use-gallery.ts';
 
 export function meta() {
   return [
@@ -20,10 +22,14 @@ export default function Home() {
   const [sessionId] = useState(getSessionId);
   const [run, dispatch] = useReducer(applyEvent, null);
   const [selected, setSelected] = useState<NodeId | null>(null);
-  // The UI only changes when an event arrives from the stream.
+  // The run only changes when an event arrives from the stream.
   const source = useEventStream(sessionId, dispatch);
+  const gallery = useGallery(sessionId, source);
+  // What the page shows: the run as its events tell it, finished from the
+  // image record if some of its events never arrived.
+  const shown = useMemo(() => run && settle(run, gallery.items), [run, gallery.items]);
 
-  const busy = run !== null && runStatus(run) === 'running';
+  const busy = shown !== null && runStatus(shown) === 'running';
 
   return (
     <main className="mx-auto max-w-7xl space-y-4 p-4 md:p-6">
@@ -33,7 +39,7 @@ export default function Home() {
       </header>
 
       <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
-        <ArchitectureDiagram run={run} selected={selected} onSelect={setSelected} />
+        <ArchitectureDiagram run={shown} selected={selected} onSelect={setSelected} />
         <div className="space-y-4">
           {source.mode === 'live' ? (
             <UploadPanel
@@ -59,12 +65,13 @@ export default function Home() {
               }
             />
           )}
-          <RunResult run={run} />
-          <NodeDetailPanel nodeId={selected} run={run} onClose={() => setSelected(null)} />
+          <RunResult run={shown} />
+          <NodeDetailPanel nodeId={selected} run={shown} onClose={() => setSelected(null)} />
         </div>
       </div>
 
-      <TimelineView run={run} />
+      <TimelineView run={shown} />
+      <Gallery gallery={gallery} />
     </main>
   );
 }

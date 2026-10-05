@@ -1,6 +1,14 @@
-import type { StepEvent } from '@cloud-relay/shared';
+import type { GalleryItem, StepEvent } from '@cloud-relay/shared';
 import { describe, expect, it } from 'vitest';
-import { applyEvent, runOutcome, runStartMs, runStatus, type RunState } from './run-state.ts';
+import {
+  applyEvent,
+  formatDuration,
+  runOutcome,
+  runStartMs,
+  runStatus,
+  settle,
+  type RunState,
+} from './run-state.ts';
 
 const RUN_A = '6f1c2a5e-8a9b-4c1d-9e2f-3a4b5c6d7e8f';
 const RUN_B = '7a2d3b6f-9bac-4d2e-8f30-4b5c6d7e8f90';
@@ -136,5 +144,73 @@ describe('runOutcome', () => {
     });
     // The retry starts: running again.
     expect(runOutcome(fold([failed, event({ status: 'started' })]))).toEqual({ kind: 'running' });
+  });
+});
+
+describe('settle (catch-up from the image record)', () => {
+  const record = (overrides: Partial<GalleryItem> = {}): GalleryItem => ({
+    runId: RUN_A,
+    status: 'ready',
+    createdAt: '2026-10-01T12:00:00.000Z',
+    thumb: { url: `/processed/${RUN_A}/thumb.webp`, width: 240, height: 320 },
+    display: { url: `/processed/${RUN_A}/display.webp`, width: 960, height: 1280 },
+    labels: [{ name: 'Lake', confidence: 99.1 }],
+    rejection: null,
+    ...overrides,
+  });
+
+  // The final push was lost: persist succeeded, notify never finished.
+  const stuck = fold([
+    event({ step: 'resize', status: 'succeeded', durationMs: 900 }),
+    event({ step: 'persist', service: 'dynamodb', status: 'started' }),
+  ]);
+
+  it('leaves the run alone while the gallery has no record for it', () => {
+    const otherRun = record({ runId: RUN_B });
+    expect(settle(stuck, [otherRun])).toBe(stuck);
+    expect(runStatus(settle(stuck, []))).toBe('running');
+  });
+
+  it('finishes the run and marks steps still waiting for an event as missed', () => {
+    const settled = settle(stuck, [record()]);
+
+    expect(runStatus(settled)).toBe('succeeded');
+    expect(settled.steps.persist?.status).toBe('missed');
+    expect(formatDuration(settled.steps.persist!)).toBe('missed');
+    // Never green from the record: steps without events stay absent.
+    expect(settled.steps.resize?.status).toBe('succeeded');
+    expect(settled.steps.label).toBeUndefined();
+    expect(settled.steps.notify).toBeUndefined();
+  });
+
+  it('marks a failed step as missed, since a later attempt must have succeeded', () => {
+    const run = fold([event({ status: 'failed', durationMs: 30, detail: { attempt: 1 } })]);
+    const settled = settle(run, [record()]);
+
+    expect(settled.steps.resize?.status).toBe('missed');
+    expect(runOutcome(settled)).toEqual({ kind: 'ready', labels: ['Lake'] });
+  });
+
+  it('reads the outcome from the record, which beats the events', () => {
+    const rejected = record({
+      status: 'rejected',
+      thumb: null,
+      display: null,
+      labels: [],
+      rejection: { reason: 'moderation', categories: ['Violence'] },
+    });
+
+    expect(runOutcome(settle(stuck, [rejected]))).toEqual({
+      kind: 'rejected',
+      reason: 'moderation: Violence',
+    });
+  });
+
+  it('lets a late event still finish its step normally', () => {
+    const late = applyEvent(
+      stuck,
+      event({ step: 'persist', service: 'dynamodb', status: 'succeeded', durationMs: 20 }),
+    );
+    expect(settle(late, [record()]).steps.persist?.status).toBe('succeeded');
   });
 });

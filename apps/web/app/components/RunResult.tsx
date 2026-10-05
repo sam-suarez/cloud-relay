@@ -7,6 +7,13 @@ import { runOutcome, type RunOutcome, type RunState } from '../lib/run-state.ts'
 export function RunResult({ run }: { run: RunState | null }) {
   if (!run) return null;
   const outcome = runOutcome(run);
+  const missed = STEPS.filter((step) => run.steps[step]?.status === 'missed').length;
+  const caughtUp = missed > 0 && (
+    <span className="mt-1 block text-slate-400">
+      Caught up from the image record: {missed} live {missed === 1 ? 'event' : 'events'} never
+      reached this tab.
+    </span>
+  );
 
   if (outcome.kind === 'running') {
     const current = STEPS.findLast((step) => run.steps[step]?.status === 'started');
@@ -31,6 +38,7 @@ export function RunResult({ run }: { run: RunState | null }) {
         ) : (
           'Rekognition found no labels above 75% confidence.'
         )}
+        {caughtUp}
       </Card>
     );
   }
@@ -39,6 +47,7 @@ export function RunResult({ run }: { run: RunState | null }) {
     return (
       <Card tone="rose" title="Rejected">
         {outcome.reason}. The original and resized files were deleted.
+        {caughtUp}
       </Card>
     );
   }

@@ -12,9 +12,14 @@ export const IMAGE_VARIANTS = {
 
 export type ImageVariant = keyof typeof IMAGE_VARIANTS;
 
-/** `processed/{sessionId}/{runId}/{variant}.webp` */
-export function processedKey(sessionId: string, runId: string, variant: ImageVariant): string {
-  return `${PROCESSED_PREFIX}${sessionId}/${runId}/${variant}.webp`;
+/**
+ * `processed/{runId}/{variant}.webp`. CloudFront serves these keys as URLs, so
+ * they leave out the session ID: a shared image link unlocks that image only,
+ * not the session's gallery and live events. Run IDs are unguessable too
+ * (UUIDv7: 74 random bits after the timestamp).
+ */
+export function processedKey(runId: string, variant: ImageVariant): string {
+  return `${PROCESSED_PREFIX}${runId}/${variant}.webp`;
 }
 
 /**

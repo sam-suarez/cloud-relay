@@ -44,6 +44,13 @@ export const RejectionSchema = z.object({
 });
 export type Rejection = z.infer<typeof RejectionSchema>;
 
+/** Why an image was rejected, in words, e.g. "moderation: Violence". */
+export function describeRejection(rejection: Rejection): string {
+  return rejection.reason === 'moderation'
+    ? `moderation: ${rejection.categories.join(', ')}`
+    : `daily analysis limit reached (${DAILY_ANALYSIS_LIMIT} images)`;
+}
+
 /**
  * One item in the Images table: partition key `sessionId`, sort key `runId`.
  * Run IDs are UUIDv7s, so a session's images sort by upload time.

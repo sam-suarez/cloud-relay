@@ -16,6 +16,8 @@ const STATUS_STYLES = {
   started: 'border-amber-400 bg-amber-950/60 text-amber-100',
   succeeded: 'border-emerald-500 bg-emerald-950/60 text-emerald-100',
   failed: 'border-rose-500 bg-rose-950/60 text-rose-100',
+  // The run finished (its record exists), but this step's closing event was lost.
+  missed: 'border-dashed border-slate-500 bg-slate-900 text-slate-300',
 } as const;
 
 const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left];
@@ -47,7 +49,8 @@ export function ServiceNode({ data }: NodeProps<ServiceNodeType>) {
       <div className="text-sm font-semibold">{data.title}</div>
       <div className="mt-1 h-4 text-xs tabular-nums">
         {status === 'started' && <span className="animate-pulse">working…</span>}
-        {status !== 'started' && duration != null && `${duration} ms`}
+        {status === 'missed' && 'event missed'}
+        {(status === 'succeeded' || status === 'failed') && duration != null && `${duration} ms`}
         {data.state && data.state.attempts > 1 && ` · attempt ${data.state.attempts}`}
       </div>
     </motion.div>

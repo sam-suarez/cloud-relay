@@ -40,6 +40,14 @@ export function NodeDetailPanel({ nodeId, run, onClose }: Props) {
       <Section title="What it is">{info.about}</Section>
       <Section title="Its job here">{info.role}</Section>
 
+      {state?.status === 'missed' && (
+        <Section title="Event missed">
+          This step&apos;s last event never reached this tab: WebSocket pushes are at-most-once (a
+          throttled post or a reconnect loses them). The image record in DynamoDB shows the run
+          finished, so the page caught up from the gallery API instead.
+        </Section>
+      )}
+
       {state && (
         <Section title="This upload">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">

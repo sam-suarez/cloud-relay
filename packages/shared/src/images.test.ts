@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ImageRecordSchema, imageExpiresAt, type ImageRecord } from './images.ts';
+import {
+  ImageRecordSchema,
+  describeRejection,
+  imageExpiresAt,
+  type ImageRecord,
+} from './images.ts';
 
 describe('imageExpiresAt', () => {
   it('is a day after the upload, in whole Unix seconds (what DynamoDB TTL reads)', () => {
@@ -29,6 +34,20 @@ describe('ImageRecordSchema', () => {
   it('requires the TTL attribute to be a number (TTL ignores strings)', () => {
     expect(ImageRecordSchema.safeParse({ ...rejected, expiresAt: '1791169998' }).success).toBe(
       false,
+    );
+  });
+});
+
+describe('describeRejection', () => {
+  it('names the blocked moderation categories', () => {
+    expect(
+      describeRejection({ reason: 'moderation', categories: ['Violence', 'Hate Symbols'] }),
+    ).toBe('moderation: Violence, Hate Symbols');
+  });
+
+  it('explains the daily limit', () => {
+    expect(describeRejection({ reason: 'daily-limit', categories: [] })).toBe(
+      'daily analysis limit reached (200 images)',
     );
   });
 });

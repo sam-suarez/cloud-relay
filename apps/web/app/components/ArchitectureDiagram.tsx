@@ -53,7 +53,9 @@ export function ArchitectureDiagram({ run, selected, onSelect }: Props) {
               ? '#10b981'
               : target === 'started'
                 ? '#fbbf24'
-                : '#475569';
+                : target === 'missed'
+                  ? '#94a3b8'
+                  : '#475569';
         return {
           id: `${e.from}->${e.to}`,
           source: e.from,

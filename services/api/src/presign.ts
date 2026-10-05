@@ -17,6 +17,7 @@ import type {
   APIGatewayProxyStructuredResultV2,
   Context,
 } from 'aws-lambda';
+import { json, requiredEnv } from './http.ts';
 
 // Created once per execution environment, outside the handler, so warm
 // invocations reuse it. Region and credentials come from the Lambda runtime
@@ -143,19 +144,4 @@ function parseJson(event: APIGatewayProxyEventV2): unknown {
   } catch {
     return undefined;
   }
-}
-
-function json(statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 {
-  return {
-    statusCode,
-    // no-store: a presigned POST is single-use and must never be cached.
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: JSON.stringify(body),
-  };
-}
-
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing environment variable ${name}`);
-  return value;
 }
