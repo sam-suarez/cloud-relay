@@ -44,6 +44,7 @@ export class GalleryApi extends Construct {
       memorySize: 256,
       timeout: Duration.seconds(3),
       logGroup,
+      tracing: lambda.Tracing.ACTIVE,
       environment: { IMAGES_TABLE: props.imagesTable.tableName },
       bundling: { externalModules: [], minify: true, sourceMap: true },
     });

@@ -14,4 +14,17 @@ if (process.env.CDK_DEFAULT_ACCOUNT && profileRegion !== REGION) {
 }
 
 const app = new App();
-buildApp(app);
+
+// Where alarms and budget alerts go: `-c alertEmail=…` or ALERT_EMAIL, never
+// committed. Required for diff/deploy, so a deploy without it can't silently
+// remove the email subscription and the budget.
+const alertEmail: string | undefined =
+  app.node.tryGetContext('alertEmail') ?? process.env.ALERT_EMAIL ?? undefined;
+if (process.env.CDK_DEFAULT_ACCOUNT && !alertEmail) {
+  throw new Error(
+    'Set the alert email for alarms and the budget: ALERT_EMAIL=you@example.com npm run deploy ' +
+      '(or -c alertEmail=…).',
+  );
+}
+
+buildApp(app, { alertEmail });

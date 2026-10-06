@@ -42,6 +42,8 @@ export interface ImageWorkerProps {
  */
 export class ImageWorker extends Construct {
   readonly function: nodejs.NodejsFunction;
+  /** The worker's logs, where monitoring counts failed attempts. */
+  readonly logGroup: logs.LogGroup;
 
   constructor(scope: Construct, id: string, props: ImageWorkerProps) {
     super(scope, id);
@@ -50,6 +52,7 @@ export class ImageWorker extends Construct {
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: RemovalPolicy.DESTROY,
     });
+    this.logGroup = logGroup;
 
     this.function = new nodejs.NodejsFunction(this, 'WorkerFunction', {
       description:
@@ -62,6 +65,7 @@ export class ImageWorker extends Construct {
       memorySize: 1024,
       timeout: WORKER_TIMEOUT,
       logGroup,
+      tracing: lambda.Tracing.ACTIVE,
       environment: {
         PROCESSED_BUCKET: props.processedBucket.bucketName,
         // For ChangeMessageVisibility after a failed attempt.

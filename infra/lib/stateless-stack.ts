@@ -5,6 +5,7 @@ import { WEBSOCKET_PATH } from '@cloud-relay/shared';
 import type { Construct } from 'constructs';
 import { GalleryApi } from './gallery-api.ts';
 import { ImageWorker } from './image-worker.ts';
+import { Monitoring } from './monitoring.ts';
 import { ProcessedImages } from './processed-images.ts';
 import { RealtimeApi } from './realtime-api.ts';
 import type { StatefulStack } from './stateful-stack.ts';
@@ -16,6 +17,8 @@ export interface StatelessStackProps extends StackProps {
   stateful: StatefulStack;
   /** Folder with the built SPA to upload. */
   webBuildDir: string;
+  /** Email for alarms and budget alerts (from context or env, never committed). */
+  alertEmail?: string;
 }
 
 /**
@@ -63,6 +66,16 @@ export class StatelessStack extends Stack {
     });
     realtime.grantEmit(uploadApi.presignFunction);
     realtime.grantEmit(worker.function);
+
+    // Alarms (DLQ, worker failures) → SNS → email, a $5 budget alert and a dashboard.
+    new Monitoring(this, 'Monitoring', {
+      alertEmail: props.alertEmail,
+      presignFunction: uploadApi.presignFunction,
+      workerFunction: worker.function,
+      workerLogGroup: worker.logGroup,
+      uploadsQueue: props.stateful.uploadsQueue,
+      deadLetterQueue: props.stateful.uploadsDeadLetterQueue,
+    });
 
     // Behaviors → /api/* goes to API Gateway instead of S3, so the SPA can call
     // a relative /api/uploads on its own domain: no CORS, no API URL to configure.

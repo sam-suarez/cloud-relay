@@ -53,6 +53,7 @@ export class RealtimeApi extends Construct {
       memorySize: 256,
       timeout: Duration.seconds(3),
       logGroup,
+      tracing: lambda.Tracing.ACTIVE,
       environment: { CONNECTIONS_TABLE: props.connectionsTable.tableName },
       bundling: { externalModules: [], minify: true, sourceMap: true },
     });

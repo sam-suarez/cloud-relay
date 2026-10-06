@@ -48,6 +48,9 @@ export class UploadApi extends Construct {
       memorySize: 256,
       timeout: Duration.seconds(5),
       logGroup,
+      // X-Ray: Lambda records a trace (init, invocation, overhead) for sampled
+      // requests, and CDK grants the role xray:PutTraceSegments/PutTelemetryRecords.
+      tracing: lambda.Tracing.ACTIVE,
       environment: { UPLOADS_BUCKET: props.uploadsBucket.bucketName },
       bundling: {
         // The Node.js runtime ships an AWS SDK, but not necessarily the

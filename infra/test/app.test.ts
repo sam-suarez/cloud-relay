@@ -1,13 +1,23 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { App } from 'aws-cdk-lib';
+import { App, Stack } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../lib/app.ts';
+import { Monitoring } from '../lib/monitoring.ts';
 
 const webBuildDir = fileURLToPath(new URL('./fixtures/site', import.meta.url));
+const ALERT_EMAIL = 'alerts@example.com';
+
+/** What CDK adds to a role for active tracing. X-Ray can't scope these to a resource. */
+const XRAY_ACTIONS = ['xray:PutTraceSegments', 'xray:PutTelemetryRecords'];
+const isXrayStatement = (s: { Action: unknown }) =>
+  JSON.stringify(s.Action) === JSON.stringify(XRAY_ACTIONS);
 
 // Synthesizing bundles the Lambdas with esbuild (and npm-installs sharp), so do
 // it once for all tests.
@@ -15,7 +25,7 @@ let templates: { stateful: Template; stateless: Template; assemblyDir: string } 
 function synthTemplates() {
   if (!templates) {
     const app = new App();
-    const { stateful, stateless } = buildApp(app, { webBuildDir });
+    const { stateful, stateless } = buildApp(app, { webBuildDir, alertEmail: ALERT_EMAIL });
     templates = {
       stateful: Template.fromStack(stateful),
       stateless: Template.fromStack(stateless),
@@ -25,8 +35,16 @@ function synthTemplates() {
   return templates;
 }
 
-/** Every IAM statement attached to the role of the one function matching `props`. */
+/**
+ * Every IAM statement attached to the role of the one function matching `props`,
+ * except the X-Ray tracing one (every function has it; see the tracing test).
+ */
 function roleStatements(template: Template, props: object) {
+  const { managed, statements } = allRoleStatements(template, props);
+  return { managed, statements: statements.filter((s) => !isXrayStatement(s)) };
+}
+
+function allRoleStatements(template: Template, props: object) {
   const resources = template.toJSON().Resources;
   const fn = logicalId(template, 'AWS::Lambda::Function', props);
   const role = resources[fn].Properties.Role['Fn::GetAtt'][0] as string;
@@ -776,5 +794,143 @@ describe('gallery: processed images through CloudFront', () => {
         ]),
       }),
     });
+  });
+});
+
+describe('monitoring: tracing', () => {
+  it('turns on active X-Ray tracing for every Lambda, with only the X-Ray write actions on "*"', () => {
+    const { stateless } = synthTemplates();
+    const functions = stateless.findResources('AWS::Lambda::Function', {
+      Properties: { Runtime: 'nodejs24.x' },
+    });
+
+    expect(Object.keys(functions)).toHaveLength(4);
+    for (const fn of Object.values(functions)) {
+      expect(fn.Properties.TracingConfig).toEqual({ Mode: 'Active' });
+      const { statements } = allRoleStatements(stateless, {
+        Description: fn.Properties.Description,
+      });
+      expect(statements.filter(isXrayStatement)).toEqual([
+        expect.objectContaining({ Resource: '*' }),
+      ]);
+    }
+  });
+});
+
+describe('monitoring: alarms and budget', () => {
+  it('emails the alert address through one SNS topic', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.resourceCountIs('AWS::SNS::Topic', 1);
+    stateless.hasResourceProperties('AWS::SNS::Subscription', {
+      Protocol: 'email',
+      Endpoint: ALERT_EMAIL,
+    });
+  });
+
+  it('alarms as soon as the DLQ holds a message', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Namespace: 'AWS/SQS',
+      MetricName: 'ApproximateNumberOfMessagesVisible',
+      Dimensions: [
+        {
+          Name: 'QueueName',
+          Value: Match.objectLike({ 'Fn::ImportValue': Match.stringLikeRegexp('DeadLetter') }),
+        },
+      ],
+      Statistic: 'Maximum',
+      Period: 60,
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [{ Ref: Match.stringLikeRegexp('AlarmTopic') }],
+    });
+  });
+
+  it('alarms on worker errors plus failed attempts, ignoring simulated failures', () => {
+    const { stateless } = synthTemplates();
+
+    stateless.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '"Attempt failed" -"Simulated failure"',
+      MetricTransformations: [
+        { MetricNamespace: 'CloudRelay', MetricName: 'WorkerFailedAttempts', MetricValue: '1' },
+      ],
+    });
+    stateless.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: 'FILL(errors, 0) + FILL(failed, 0)' }),
+        Match.objectLike({
+          Id: 'errors',
+          MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: 'Errors' }) }),
+        }),
+        Match.objectLike({
+          Id: 'failed',
+          MetricStat: Match.objectLike({
+            Metric: Match.objectLike({ MetricName: 'WorkerFailedAttempts' }),
+          }),
+        }),
+      ]),
+      Threshold: 1,
+      AlarmActions: [{ Ref: Match.stringLikeRegexp('AlarmTopic') }],
+    });
+    stateless.resourceCountIs('AWS::CloudWatch::Alarm', 2);
+  });
+
+  it('sets a $5 monthly cost budget with actual and forecasted email alerts', () => {
+    const { stateless } = synthTemplates();
+    const subscribers = [{ SubscriptionType: 'EMAIL', Address: ALERT_EMAIL }];
+
+    stateless.hasResourceProperties('AWS::Budgets::Budget', {
+      Budget: {
+        BudgetType: 'COST',
+        TimeUnit: 'MONTHLY',
+        BudgetLimit: { Amount: 5, Unit: 'USD' },
+      },
+      NotificationsWithSubscribers: [
+        {
+          Notification: Match.objectLike({ NotificationType: 'ACTUAL', Threshold: 100 }),
+          Subscribers: subscribers,
+        },
+        {
+          Notification: Match.objectLike({ NotificationType: 'FORECASTED', Threshold: 100 }),
+          Subscribers: subscribers,
+        },
+      ],
+    });
+  });
+
+  it('builds one dashboard within the free tier (≤ 50 metrics)', () => {
+    const { stateless } = synthTemplates();
+    const dashboards = Object.values(stateless.findResources('AWS::CloudWatch::Dashboard'));
+
+    expect(dashboards).toHaveLength(1);
+    const body = JSON.stringify(dashboards[0]?.Properties.DashboardBody);
+    const metricLines = body.match(/\[\\"AWS\/|\[\\"CloudRelay/g) ?? [];
+    expect(metricLines.length).toBeGreaterThan(0);
+    expect(metricLines.length).toBeLessThanOrEqual(50);
+  });
+
+  it('skips the email subscription and the budget without an alert email', () => {
+    const stack = new Stack(new App(), 'MonitoringOnly');
+    const fn = new lambda.Function(stack, 'Fn', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => {}'),
+    });
+    new Monitoring(stack, 'Monitoring', {
+      presignFunction: fn,
+      workerFunction: fn,
+      workerLogGroup: new logs.LogGroup(stack, 'Logs'),
+      uploadsQueue: new sqs.Queue(stack, 'Queue'),
+      deadLetterQueue: new sqs.Queue(stack, 'Dlq'),
+    });
+    const template = Template.fromStack(stack);
+
+    template.resourceCountIs('AWS::SNS::Topic', 1);
+    template.resourceCountIs('AWS::SNS::Subscription', 0);
+    template.resourceCountIs('AWS::Budgets::Budget', 0);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 2);
   });
 });
