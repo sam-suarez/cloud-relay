@@ -1,6 +1,6 @@
 # Cloud Relay
 
-I'm a front-end developer who has spent most of my time on Cloudflare, Vercel and Supabase. I wanted to learn AWS, and reading docs only gets you so far. So I built something small and made myself use the real services: **upload a photo and watch it travel through AWS.**
+I'm a software engineer who has spent most of my time on Shopify. I wanted to learn AWS, and reading docs only gets you so far. So I built something small and made myself use the real services: **upload a photo and watch it travel through AWS.**
 
 The page shows a live architecture diagram. Each node (CloudFront, API Gateway, Lambda, S3, SQS, Rekognition, DynamoDB, WebSocket) lights up when that step actually happens, with timings measured by the backend. Nothing is faked on a timer. If a node is lit, AWS really did the work.
 
