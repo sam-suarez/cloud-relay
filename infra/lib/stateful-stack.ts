@@ -15,8 +15,7 @@ import type { Construct } from 'constructs';
 import { WORKER_TIMEOUT } from './config.ts';
 
 /**
- * Resources that hold data: S3 buckets, SQS queues, DynamoDB tables, the Aurora
- * cluster, the Cognito user pool.
+ * Resources that hold data: S3 buckets, SQS queues, DynamoDB tables.
  *
  * Kept separate so the stateless stack can be destroyed and redeployed freely
  * without any risk of replacing (and emptying) a bucket or table. Changes here

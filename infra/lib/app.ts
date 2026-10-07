@@ -22,12 +22,12 @@ export function buildApp(
 
   const stateful = new StatefulStack(app, 'CloudRelayStateful', {
     env,
-    description: 'Cloud Relay: data (buckets, tables, database, user pool)',
+    description: 'Cloud Relay: data (buckets, queues, tables)',
   });
 
   const stateless = new StatelessStack(app, 'CloudRelayStateless', {
     env,
-    description: 'Cloud Relay: compute and routing (Lambdas, APIs, CDN, ECS)',
+    description: 'Cloud Relay: compute and routing (Lambdas, APIs, CDN, monitoring)',
     stateful,
     webBuildDir,
     alertEmail,

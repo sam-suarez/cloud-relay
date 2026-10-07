@@ -22,7 +22,7 @@ export interface StatelessStackProps extends StackProps {
 }
 
 /**
- * Compute and routing: Lambdas, API Gateway, CloudFront, ECS task definitions.
+ * Compute and routing: Lambdas, API Gateway, CloudFront, monitoring.
  * Nothing in here stores data, so it is always safe to replace or tear down.
  */
 export class StatelessStack extends Stack {

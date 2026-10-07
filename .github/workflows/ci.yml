@@ -1,0 +1,35 @@
+# Lint, format, typecheck, test and `cdk synth` on every push and pull request.
+# No AWS credentials: synth needs none (bin/app.ts only asks for an account and
+# the alert email when credentials exist), and deploys stay manual.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR cancels the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Synth bundles the worker and npm-installs sharp's linux-arm64 binary
+      # into its asset, so the runner needs network access but no Docker.
+      - run: npm run check
